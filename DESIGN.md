@@ -820,6 +820,134 @@ Synced `#todo`/`#idea`/`#bug` items don't appear in the note at all — see
 "Item list" above for where they live instead (the Projects sidebar's
 detail view, sourced from `ProjectSyncManager`'s in-memory cache).
 
+## Hugo Posts
+
+A fourth sidebar tab, replacing a standalone Hugo-specific plugin this
+project used to ship alongside it. Deliberately thin: read/navigate the
+site's content, plus create a new post from the site's own archetype. No
+draft/publish toggle — flipping `draft` in frontmatter and running `hugo`
+stays a terminal job.
+
+### Detection
+
+Reuses the Projects Extension's own repo scan rather than a parallel
+config/watch system: `ProjectMetadata.ts`'s `TECH_FILES` table already tags
+any repo with a `hugo.toml`/`hugo.yaml`/`hugo.yml`/`config.toml`/
+`config.yaml`/`config.yml` at its root as `"Hugo"` in `ScannedProject.stack`
+(this predates the Posts tab — it was already used for the Projects list's
+Stack display). `HugoScanner.locateHugoSite` filters `scannedProjects` for
+the first repo whose stack includes `"Hugo"` and takes it as *the* site —
+one Hugo site per vault is assumed; a monorepo with more than one Hugo
+config only ever sees the first.
+
+`HugoScanner.readHugoSite` then finds the actual config file (same
+candidate-list-in-priority-order pattern `ProjectMetadata.ts`'s
+`findReadme`/`findChangelog` use — `hugo.*` before `config.*`, matching
+modern Hugo's own preference) and reads its `contentDir` via
+`HugoParser.parseHugoConfig`, defaulting to `"content"` when unset.
+
+Both the stack tag (`ProjectMetadata.hasHugoConfigDir`) and the config read
+(`HugoScanner.findConfigFile`) also fall back to Hugo's newer
+`config/_default/` layout — same filenames, one directory level down —
+checked only when no root-level file exists. Found via a real repo that
+uses only this layout (`bruce-loves-to-cook.warpedvisions.org`); a root-only
+check silently missed it, with no error — the Posts tab just reported no
+Hugo site found.
+
+### A lazy-sync race, and why the fix is a shared promise, not a boolean
+
+`ensurePostsScanned` depends on `ensureProjectsSynced`'s *result*
+(`scannedProjects`), not just "has a sync happened." Both are fired
+fire-and-forget from `onOpen` in the same tick. The original guard —
+`if (this.projectsSyncedOnce || this.projectsSyncing) return;` — only
+prevented a second, redundant sync from *starting*; it didn't make a
+concurrent caller *wait* for the one already in flight. So `ensurePostsScanned`
+could call `ensureProjectsSynced()` while the first call was still awaiting
+`syncManager.syncAll(...)`, see `projectsSyncing === true`, and return
+immediately with `scannedProjects` still at its stale (often empty, on
+first load) value — `locateHugoSite` then finds nothing, and
+`postsSyncedOnce` latches `true`, so the Posts tab reports "No Hugo site
+found" permanently until the next manual Refresh, even though the repo is
+right there. This didn't reproduce in the synthetic temp-dir unit tests
+(which call `HugoScanner` directly, bypassing `SidebarView`'s async
+orchestration entirely) — found only by testing against a real vault, where
+the timing-dependent race actually fires. Both `ensureProjectsSynced` and
+`ensurePostsScanned` now cache their in-flight promise
+(`projectsSyncPromise`/`postsSyncPromise`); a concurrent caller awaits that
+shared promise instead of the boolean, so it gets the real result once the
+sync completes rather than racing past it.
+
+### Data flow
+
+```
+1. Locate  : locateHugoSite(scannedProjects) — reuses the Projects scan,
+             does not trigger a scan of its own
+2. Read    : readHugoSite(repoPath) finds + parses the site's config
+             for contentDir
+3. Scan    : scanPosts(site) walks contentDir, parses each .md's
+             frontmatter (title/draft/date) + mtime
+4. Render  : SidebarView.renderPostsTabContent — Drafts/All filter,
+             grouped by top-level section folder, sorted by mtime
+             within each group
+5. Open    : row click -> openProjectInApp (reuses the Projects detail
+             view's "Open in Editor" mechanism, same projectsEditorApp
+             setting) — Hugo content lives outside the vault, same as a
+             repo's BUGS.md/TODO.md, so this is the same external-file-
+             open path, not the vault API
+6. Create  : "New post" (kebab menu) -> createPost writes
+             content/<section>/<slug>.md from the repo's own archetype
+```
+
+No live file watcher on `content/` (unlike TODOs/Ideas' vault watchers or
+Projects' whole-base-folder `fs.watch` in `ProjectSyncManager`) — scanning
+is lazy (`ensurePostsScanned`, mirrors `ensureProjectsSynced`'s guard
+shape), triggered on tab open and by the existing "Refresh" kebab action.
+A dedicated watcher scoped to one repo's `content/` directory is a
+reasonable follow-up, not required for v1.
+
+### Data model
+
+```ts
+interface HugoSite {
+  repoPath: string;    // absolute path to the repo root
+  contentDir: string;  // absolute path: repoPath + its own contentDir config
+}
+
+interface HugoPost {
+  title: string;    // frontmatter title, or filename when absent
+  path: string;     // absolute path to the post's .md file
+  section: string;  // first path segment under contentDir; "(root)" if none
+  draft: boolean;   // frontmatter `draft`; defaults false when absent
+  mtimeMs: number;  // file mtime — drives the "~Xd" label and within-group sort
+}
+```
+
+### Archetype rendering (v1 scope)
+
+Hugo archetypes are Go templates; `HugoParser.renderArchetype` does not
+evaluate them — it substitutes the handful of tokens present in virtually
+every Hugo starter's `archetypes/default.md` (`{{ .Name }}`, `{{ .Date }}`,
+`{{ .TranslationBaseName }}`, and the ubiquitous
+`{{ replace .Name "-" " " | title }}` idiom — substituted with the real
+title text rather than reconstructed from the slug) and leaves anything
+else untouched. No archetype file found (`archetypes/<section>.md`, then
+`archetypes/default.md`) falls back to a minimal built-in template
+(`title`/`date`/`draft: true`). New posts are always a single file at
+`content/<section>/<slug>.md` — no leaf-bundle (`<slug>/index.md`) folder
+creation. `_index.md` files are excluded from the post list (Hugo section-
+index/list pages, not posts); an ordinary leaf-bundle `index.md` is still
+included.
+
+### No YAML/TOML dependency
+
+Like `PlanParser.ts`/`StructuredFileParser.ts`, `HugoParser.ts` is pure and
+hand-rolled — this plugin has no runtime dependencies, and a site config's
+`contentDir` plus a post's `title`/`draft`/`date` frontmatter don't need a
+real parser. `parsePostFrontmatter` mirrors `ProjectSyncManager.ts`'s
+`parseFrontmatter` delimiter/line-split approach (typed, and TOML `+++`
+frontmatter as well as YAML `---`), not reused directly since that one
+returns an untyped `Map` built for the project-note sync use case.
+
 ## File Organization
 
 ```
@@ -836,6 +964,9 @@ warped-command/          # repo root — flat since the repo split (Phase 1a)
 │   ├── ProjectSyncManager.ts # Vault note sync, fs.watch, manual sync command
 │   ├── ProjectItemMutator.ts # Mutates a ParsedProjectItem's source line/block
 │   ├── HeaderBlockMover.ts   # Multi-line block-move (Phase 6 Case 1)
+│   ├── HugoParser.ts         # Pure: Hugo config/frontmatter parsing, archetype rendering
+│   ├── HugoScanner.ts        # Hugo site detection, post scanning, post creation (fs)
+│   ├── NewHugoPostModal.ts   # "New post" title + section prompt
 │   ├── SidebarView.ts        # TODOs sidebar UI
 │   ├── ProjectsSidebarView.ts # Projects sidebar UI
 │   ├── ContextMenuHandler.ts # Right-click menus

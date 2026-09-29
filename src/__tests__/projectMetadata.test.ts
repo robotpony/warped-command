@@ -57,6 +57,24 @@ describe("detectStack", () => {
     expect(detectStack(dir)).toEqual(["JS", "node.js"]);
   });
 
+  it("detects Hugo from a root-level hugo.toml", async () => {
+    await writeFile(join(dir, "hugo.toml"), "baseURL = \"https://example.com\"\n");
+    expect(detectStack(dir)).toEqual(["Hugo"]);
+  });
+
+  it("detects Hugo from the newer config/_default/hugo.toml layout, with no root config", async () => {
+    await mkdir(join(dir, "config", "_default"), { recursive: true });
+    await writeFile(join(dir, "config", "_default", "hugo.toml"), "baseURL = \"https://example.com\"\n");
+    expect(detectStack(dir)).toEqual(["Hugo"]);
+  });
+
+  it("doesn't double-tag Hugo when both a root config and config/_default/ exist", async () => {
+    await writeFile(join(dir, "hugo.toml"), "");
+    await mkdir(join(dir, "config", "_default"), { recursive: true });
+    await writeFile(join(dir, "config", "_default", "hugo.toml"), "");
+    expect(detectStack(dir)).toEqual(["Hugo"]);
+  });
+
   it("adds typescript from package.json devDependencies", async () => {
     await writeFile(
       join(dir, "package.json"),

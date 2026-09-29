@@ -123,6 +123,25 @@ export function formatDate(date: Date, format: string): string {
 }
 
 /**
+ * Compact relative-age label for the Posts tab's row meta line (e.g. "~2d")
+ * — `moment().fromNow()` only produces the verbose "2 days ago" form, and
+ * there's no shorter built-in. Thresholds: hours under a day, days under a
+ * week, weeks under a month, months under a year, years beyond that.
+ */
+export function formatRelativeShort(date: Date | number): string {
+  const ms = Date.now() - (typeof date === "number" ? date : date.getTime());
+  const hours = ms / (1000 * 60 * 60);
+  if (hours < 24) return `~${Math.max(1, Math.round(hours))}h`;
+  const days = hours / 24;
+  if (days < 7) return `~${Math.round(days)}d`;
+  const weeks = days / 7;
+  if (days < 31) return `~${Math.round(weeks)}w`;
+  const months = days / 30;
+  if (days < 365) return `~${Math.round(months)}mo`;
+  return `~${Math.round(days / 365)}y`;
+}
+
+/**
  * Preset moment.js formats offered for both `insertDateFormat` (the text
  * @today, @tomorrow, @yesterday, and /today, /tomorrow insert into a note)
  * and `dateFormat` (the `#todone @date` completion stamp).

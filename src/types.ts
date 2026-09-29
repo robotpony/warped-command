@@ -220,6 +220,31 @@ export interface ProjectSyncStateEntry {
   lastSynced: string;
 }
 
+/**
+ * The Hugo site auto-detected among the repos under `projectsBaseFolder`
+ * (the first `ScannedProject` whose `stack` includes `"Hugo"` — see
+ * `HugoScanner.locateHugoSite`). Assumes one Hugo site per vault.
+ */
+export interface HugoSite {
+  /** Absolute path to the repo root. */
+  repoPath: string;
+  /** Absolute path to the site's content directory — repoPath + its own `contentDir` config (default `"content"`). See HugoParser.parseHugoConfig. */
+  contentDir: string;
+}
+
+/** One post found under a HugoSite's contentDir. See `HugoScanner.scanPosts`. */
+export interface HugoPost {
+  /** Frontmatter title, or the filename (without extension) when absent. */
+  title: string;
+  /** Absolute filesystem path to the post's markdown file. */
+  path: string;
+  /** First path segment under contentDir; "(root)" for a file directly at contentDir's top level. */
+  section: string;
+  draft: boolean;
+  /** File mtime in ms, used for the compact "~Xd" relative label and within-section sort. */
+  mtimeMs: number;
+}
+
 export const DEFAULT_SETTINGS: WarpedTodoSettings = {
   showSidebarByDefault: true,
   dateFormat: "YYYY-MM-DD",

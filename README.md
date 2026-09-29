@@ -26,6 +26,7 @@ Track `#todo` tags across your vault and `TODO.md`/`BUGS.md` across your git rep
   - [Ideas and principles](#ideas-and-principles)
   - [Moving TODOs between files](#moving-todos-between-files)
   - [Projects](#projects)
+  - [Posts](#posts)
   - [Editor shortcuts](#editor-shortcuts)
   - [Commands and hotkeys](#commands-and-hotkeys)
   - [Sidebar utilities](#sidebar-utilities)
@@ -127,20 +128,21 @@ Mode state persists across sessions by default; configure via the `focusQueueLim
 
 ## Tabs
 
-The sidebar's header has four buttons, plus a kebab (⋯) menu:
+The sidebar's header has five buttons, plus a kebab (⋯) menu:
 
 | Button              | Shows                                                                                  |
 |----------------------|----------------------------------------------------------------------------------------|
 | TODOs                | Active `#todo` items, grouped by header where applicable. Default tab.                |
 | Projects             | Git repos tracked from a folder on disk, not vault notes. See [Projects](#projects).   |
 | Ideas                | Active `#idea` / `#ideas` / `#ideation` items                                          |
-| Focus (eye icon)     | Toggles [Focus mode](#focus-mode), an immersive single-item queue. Not a fourth tab: the other three stay clickable while it's active, and clicking one exits focus and switches in one click. |
+| Posts                | A Hugo site's content, drafts-filtered by default. See [Posts](#posts).               |
+| Focus (eye icon)     | Toggles [Focus mode](#focus-mode), an immersive single-item queue. Not a fifth tab: the other four stay clickable while it's active, and clicking one exits focus and switches in one click. |
 
 Snoozed items (`#future` / `#snooze` / `#snoozed`) show up in TODOs and Ideas like any other tag; right-click a row to Snooze/Unsnooze it. The only place snoozed items are excluded is Focus Mode's queue.
 
 Below the TODOs list (not Ideas), the **Summary** section shows priority breakdown, completion velocity (today / week / month), and top backlogs.
 
-The kebab menu, next to the four buttons, covers Refresh, Stats, About, and Settings from any tab; it adds Sync when you're on the Projects tab. See [Sidebar utilities](#sidebar-utilities).
+The kebab menu, next to the five buttons, covers Refresh, Stats, About, and Settings from any tab; it adds Sync when you're on the Projects tab, and New post when you're on the Posts tab. See [Sidebar utilities](#sidebar-utilities).
 
 ## Mentions and delegation
 
@@ -247,6 +249,16 @@ Frontmatter is hidden in the note's editor view for these project notes; the sid
 Write in a project's note, whether that's a spec, a plan worked out with an agent, or your own notes, select a chunk of it, and run **Send selection to project** (command palette, or bind it to a hotkey). A small prompt asks for a title, then the selection is appended to that project's `TODO.md` as a new open `#todo` item, tagged and ready for whatever picks up work in that repo next, an agent or you.
 
 This only appears on notes that are themselves project notes (the ones with `repo` in frontmatter, described above); there's nowhere to send a selection from a note with no linked repo. `TODO.md` is created if the project doesn't have one yet.
+
+## Posts
+
+The Posts tab lists a Hugo site's content — drafts by default, grouped by content section (its top-level folder). There's nothing to configure: it auto-detects the Hugo site among the same repos the Projects tab already scans (the first one with a `hugo.toml`, `config.yaml`, or similar, either at its root or under `config/_default/`), then reads that site's own `contentDir` setting to find its posts.
+
+Each row shows the post's title, a DRAFT badge when it's unpublished, a compact relative edit age (`~2d`), and its path under the content folder. Click a row to open it in your configured editor app (Settings → Projects → "Editor app" — the same setting the Projects detail view's "Open in Editor" action uses); right-click for Reveal in Finder. Switch the filter pills from Drafts to All to see published posts too.
+
+**New post**, in the kebab menu while on the Posts tab, prompts for a title and a section, then creates `content/<section>/your-title.md` from the repo's own Hugo archetype (`archetypes/<section>.md`, falling back to `archetypes/default.md`, then a simple built-in template) and opens it.
+
+The Posts tab is read/navigate + create only — there's no draft/publish toggle here; flipping `draft` in the frontmatter and running `hugo` stays a terminal job. Requires the plugin's desktop build, same as Projects.
 
 ## Editor shortcuts
 

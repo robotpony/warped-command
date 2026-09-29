@@ -1,4 +1,5 @@
 import { ItemView, WorkspaceLeaf, TFile, Menu, Modal, MarkdownRenderer, Component, moment, setIcon } from "obsidian";
+import { relative } from "path";
 import { TodoScanner } from "./TodoScanner";
 import { TodoProcessor } from "./TodoProcessor";
 import { ProjectManager, projectFilePath } from "./ProjectManager";
@@ -32,9 +33,11 @@ import {
   calculateLaterPriority as calculateProjectLaterPriority,
 } from "./ProjectsSidebarView";
 import { TeamManager } from "./TeamManager";
-import { TodoItem, ProjectInfo, ItemRenderConfig, FocusQueueState, SortableEntry } from "./types";
+import { TodoItem, ProjectInfo, ItemRenderConfig, FocusQueueState, SortableEntry, HugoSite, HugoPost } from "./types";
 import { ContextMenuHandler } from "./ContextMenuHandler";
-import { getPriorityValue, compareTodoItems, compareWithEffectivePriority, compareSortableEntries, hasTag, openFileAtLine, extractMentions, resolveMentions, resolveEffectiveMentions, showNotice, getTagColourInfo, extractCompletionDate, buildFocusQueue, getItemDate, tallyProjectTags, itemMatchesTagFilter, pluralize } from "./utils";
+import { getPriorityValue, compareTodoItems, compareWithEffectivePriority, compareSortableEntries, hasTag, openFileAtLine, extractMentions, resolveMentions, resolveEffectiveMentions, showNotice, getTagColourInfo, extractCompletionDate, buildFocusQueue, getItemDate, tallyProjectTags, itemMatchesTagFilter, pluralize, formatRelativeShort } from "./utils";
+import { locateHugoSite, readHugoSite, scanPosts, createPost } from "./HugoScanner";
+import { NewHugoPostModal } from "./NewHugoPostModal";
 
 export const VIEW_TYPE_TODO_SIDEBAR = "warped-todo-sidebar";
 
@@ -62,7 +65,7 @@ export class TodoSidebarView extends ItemView {
   // for the current session but the default never sticks as expanded.
   private summaryExpanded: boolean = false;
   private makeLinksClickable: boolean;
-  private activeTab: 'todos' | 'ideas' | 'projects' = 'todos';
+  private activeTab: 'todos' | 'ideas' | 'projects' | 'posts' = 'todos';
   private activeTagFilter: string | null = null;
   private activeAssigneeFilter: string | null = null;
   // Crossfade transition for filter changes — guards against overlapping
@@ -77,7 +80,7 @@ export class TodoSidebarView extends ItemView {
   private focusQueue: FocusQueueState | null = null;
   private setFocusModeActive: (active: boolean) => Promise<void>;
   // Snapshot for restoring sidebar position on Exit.
-  private prevActiveTab: 'todos' | 'ideas' | 'projects' | null = null;
+  private prevActiveTab: 'todos' | 'ideas' | 'projects' | 'posts' | null = null;
   private prevScrollTop: number = 0;
   private openDropdown: HTMLElement | null = null;
   private openDropdownTrigger: HTMLElement | null = null;
@@ -105,7 +108,7 @@ export class TodoSidebarView extends ItemView {
   // from instead. Cleared by every other path into detail view (list row
   // click, auto-follow while already on this tab) — see backToProjectsList
   // and switchToProjectsTab.
-  private projectDetailReturnTab: 'todos' | 'ideas' | null = null;
+  private projectDetailReturnTab: 'todos' | 'ideas' | 'posts' | null = null;
   private projectsFilterText: string = '';
   // Seeded once from settings.defaultProjectsSortKey in the constructor
   // below, then session-only from there — like projectsFilterText above,
@@ -124,6 +127,12 @@ export class TodoSidebarView extends ItemView {
   private scannedProjects: ScannedProject[] = [];
   private projectsSyncing: boolean = false;
   private projectsSyncedOnce: boolean = false;
+  // The in-flight sync, so a concurrent caller (ensurePostsScanned, which
+  // needs the *result*, not just "don't start a redundant sync") awaits the
+  // same promise instead of the projectsSyncing boolean tripping it into
+  // returning immediately with stale/empty scannedProjects. See
+  // ensureProjectsSynced's own comment for how this was found.
+  private projectsSyncPromise: Promise<void> | null = null;
   // Tracks the active file's path so handleProjectActiveFileChange can tell
   // "the active file genuinely changed" from "some workspace event fired for
   // the same file" (Obsidian fires these often, for reasons unrelated to
@@ -131,6 +140,18 @@ export class TodoSidebarView extends ItemView {
   // switched away from the Projects tab could get silently yanked back into
   // detail mode by the next such event.
   private lastKnownProjectFilePath: string | null = null;
+
+  // ===== Posts tab state =====
+  // Read-only + "new post" only (no draft-toggle mutation — see DESIGN.md's
+  // Hugo Posts section). No detail view, unlike Projects: a row click opens
+  // the file externally rather than navigating within the sidebar.
+  private postsFilter: 'drafts' | 'all' = 'drafts';
+  private cachedHugoSite: HugoSite | null = null;
+  private cachedPosts: HugoPost[] = [];
+  private postsSyncing: boolean = false;
+  private postsSyncedOnce: boolean = false;
+  // Same reasoning as projectsSyncPromise above.
+  private postsSyncPromise: Promise<void> | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -193,6 +214,7 @@ export class TodoSidebarView extends ItemView {
       case 'todos': return "TODOs";
       case 'ideas': return "IDEAs";
       case 'projects': return "Projects";
+      case 'posts': return "Posts";
     }
   }
 
@@ -662,6 +684,9 @@ export class TodoSidebarView extends ItemView {
     // long the user spent on those tabs first. Fire-and-forget: it re-renders
     // itself via ensureProjectsSynced() once the sync lands.
     void this.ensureProjectsSynced();
+    // Same reasoning for Posts — kick it off here rather than waiting for
+    // the first tab click, so it's not a visible "Syncing…" flash every time.
+    void this.ensurePostsScanned();
   }
 
   async onClose(): Promise<void> {
@@ -768,6 +793,7 @@ export class TodoSidebarView extends ItemView {
         case 'todos': titleEl.appendText(" TODOs"); break;
         case 'ideas': titleEl.appendText(" IDEAs"); break;
         case 'projects': titleEl.appendText(" Projects"); break;
+        case 'posts': titleEl.appendText(" Posts"); break;
       }
     }
 
@@ -802,6 +828,17 @@ export class TodoSidebarView extends ItemView {
     ideasTab.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"></path><path d="M10 22h4"></path><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"></path></svg>';
     ideasTab.addEventListener("click", () => this.switchTab('ideas'));
 
+    // Posts is a tab like Ideas — reads a Hugo site's content/ folder,
+    // auto-detected among the repos Projects already scans (see
+    // locateHugoSite in HugoScanner.ts). No detail view, so a plain
+    // switchTab (not switchToProjectsTab's jump-to-detail machinery) is enough.
+    const postsTab = tabNav.createEl("button", {
+      cls: `sidebar-tab-btn${!this.focusModeActive && this.activeTab === 'posts' ? ' active' : ''}`,
+      attr: { "aria-label": "Posts" },
+    });
+    postsTab.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>';
+    postsTab.addEventListener("click", () => this.switchTab('posts'));
+
     // Eye icon — toggles focus mode. Active (yellow) when focus is on so the
     // user can click the same spot to exit without moving the mouse.
     const focusModeTopBtn = tabNav.createEl("button", {
@@ -833,6 +870,7 @@ export class TodoSidebarView extends ItemView {
       case 'todos':  this.renderTodosContent(content); break;
       case 'ideas':  this.renderIdeasContent(content); break;
       case 'projects': this.renderProjectsTabContent(content); break;
+      case 'posts': this.renderPostsTabContent(content); break;
     }
   }
 
@@ -2167,6 +2205,11 @@ export class TodoSidebarView extends ItemView {
             if (this.getProjectsOptions().baseFolder) {
               this.projectsSyncedOnce = false;
               rescans.push(this.ensureProjectsSynced());
+              // Posts depends on scannedProjects (locateHugoSite filters it
+              // for a "Hugo" stack tag) — reset alongside Projects so a
+              // newly-added Hugo site, or new/edited posts, show up too.
+              this.postsSyncedOnce = false;
+              rescans.push(this.ensurePostsScanned());
             }
             await Promise.all(rescans);
             setTimeout(() => menuBtn.removeClass("rotating"), 500);
@@ -2188,6 +2231,17 @@ export class TodoSidebarView extends ItemView {
               await this.ensureProjectsSynced();
               setTimeout(() => menuBtn.removeClass("rotating"), 500);
             });
+        });
+      }
+
+      // Posts-tab-local "new post" action — only offered once a Hugo site
+      // has actually been found, since it needs somewhere to write to.
+      if (this.activeTab === 'posts' && this.cachedHugoSite) {
+        menu.addItem((item) => {
+          item
+            .setTitle("New post")
+            .setIcon("file-plus")
+            .onClick(() => this.openNewHugoPostModal());
         });
       }
 
@@ -2291,7 +2345,7 @@ export class TodoSidebarView extends ItemView {
    * tab/scroll position: the user just explicitly picked a destination, so
    * there's nothing to restore.
    */
-  private switchTab(tab: 'todos' | 'ideas'): void {
+  private switchTab(tab: 'todos' | 'ideas' | 'posts'): void {
     if (this.focusModeActive) {
       this.focusModeActive = false;
       this.focusQueue = null;
@@ -2300,6 +2354,9 @@ export class TodoSidebarView extends ItemView {
     }
     this.activeTab = tab;
     this.render();
+    // Fire-and-forget, like switchToProjectsTab's ensureProjectsSynced — renders
+    // immediately with whatever's cached, then re-renders once the scan lands.
+    if (tab === 'posts') void this.ensurePostsScanned();
   }
 
   /**
@@ -2322,7 +2379,7 @@ export class TodoSidebarView extends ItemView {
    * With no tag (the tab button's own click), always clears it: that's the
    * "back to the Projects list" affordance.
    */
-  private switchToProjectsTab(tag?: string, returnTab?: 'todos' | 'ideas'): void {
+  private switchToProjectsTab(tag?: string, returnTab?: 'todos' | 'ideas' | 'posts'): void {
     if (tag) {
       if (this.activeTab !== 'projects') {
         this.projectDetailReturnTab = returnTab ?? (this.activeTab === 'ideas' ? 'ideas' : 'todos');
@@ -2540,29 +2597,91 @@ export class TodoSidebarView extends ItemView {
    * "Sync" in the kebab menu forces a repeat by clearing projectsSyncedOnce
    * first.
    */
+  /**
+   * `onOpen` fires this and `ensurePostsScanned` back to back, uncoordinated
+   * — both fire-and-forget. Without the promise cache below, a concurrent
+   * call landing here while a sync is already in flight would hit the old
+   * `if (this.projectsSyncedOnce || this.projectsSyncing) return;` guard and
+   * return immediately, leaving `scannedProjects` at its stale (often empty,
+   * on first load) value instead of the result the in-flight sync was about
+   * to produce. `ensurePostsScanned` awaits this method expecting the real
+   * result, so that race silently left the Posts tab reporting "No Hugo site
+   * found" even when the repo was right there — found via a real vault, not
+   * a synthetic test, since fixed-interval fixtures don't reproduce a race
+   * this timing-dependent. Concurrent callers now await the same promise a
+   * first caller kicked off, rather than a boolean that only prevents
+   * redundant work without ever handing back the result.
+   */
   private async ensureProjectsSynced(): Promise<void> {
-    if (this.projectsSyncedOnce || this.projectsSyncing) return;
+    if (this.projectsSyncedOnce) return;
+    if (this.projectsSyncPromise) {
+      await this.projectsSyncPromise;
+      return;
+    }
     const options = this.getProjectsOptions();
     if (!options.baseFolder) return;
 
     this.projectsSyncing = true;
-    try {
-      this.scannedProjects = await this.syncManager.syncAll({
+    this.projectsSyncPromise = this.syncManager
+      .syncAll({
         baseFolder: options.baseFolder,
         projectsFolder: options.projectsFolder,
         maxDepth: options.scanDepth,
         excludeDirs: options.excludeDirs,
+      })
+      .then((scanned) => {
+        this.scannedProjects = scanned;
+      })
+      .catch((error) => {
+        console.error("[Warped Todo]", "Project sync failed:", error);
+        showNotice("Couldn't sync Projects. See console for details.");
+      })
+      .finally(() => {
+        this.projectsSyncing = false;
+        this.projectsSyncedOnce = true;
+        this.projectsSyncPromise = null;
+        // Project blocks can now appear in any of the three tabs, not just
+        // Projects, so there's no tab where fresh sync data isn't relevant.
+        this.render();
       });
-    } catch (error) {
-      console.error("[Warped Todo]", "Project sync failed:", error);
-      showNotice("Couldn't sync Projects. See console for details.");
-    } finally {
-      this.projectsSyncing = false;
-      this.projectsSyncedOnce = true;
+    await this.projectsSyncPromise;
+  }
+
+  /**
+   * Lazy-loads the Posts tab's data: find the Hugo site among the repos
+   * Projects already scans, read its config, list its posts. Depends on
+   * `scannedProjects` (locateHugoSite filters that list for a "Hugo" stack
+   * tag), so it awaits ensureProjectsSynced first — see that method's own
+   * comment for why a plain boolean guard isn't enough for a dependent
+   * caller, and why this method needs the identical promise-cache shape for
+   * its own concurrent callers (onOpen and switchTab('posts') can both fire
+   * this close together too).
+   */
+  private async ensurePostsScanned(): Promise<void> {
+    if (this.postsSyncedOnce) return;
+    if (this.postsSyncPromise) {
+      await this.postsSyncPromise;
+      return;
     }
-    // Project blocks can now appear in any of the three tabs, not just
-    // Projects, so there's no tab where fresh sync data isn't relevant.
-    this.render();
+
+    this.postsSyncing = true;
+    this.postsSyncPromise = this.ensureProjectsSynced()
+      .then(async () => {
+        const hugoRepo = locateHugoSite(this.scannedProjects);
+        this.cachedHugoSite = hugoRepo ? await readHugoSite(hugoRepo.localPath) : null;
+        this.cachedPosts = this.cachedHugoSite ? await scanPosts(this.cachedHugoSite) : [];
+      })
+      .catch((error) => {
+        console.error("[Warped Todo]", "Hugo posts scan failed:", error);
+        showNotice("Couldn't scan Hugo posts. See console for details.");
+      })
+      .finally(() => {
+        this.postsSyncing = false;
+        this.postsSyncedOnce = true;
+        this.postsSyncPromise = null;
+        this.render();
+      });
+    await this.postsSyncPromise;
   }
 
   /**
@@ -2713,6 +2832,158 @@ export class TodoSidebarView extends ItemView {
     } else {
       this.renderProjectsList(container);
     }
+  }
+
+  // ===== Posts tab =====
+  // Read/navigate + "new post" only — see DESIGN.md's Hugo Posts section for
+  // the full v1 scope (no draft-toggle mutation, no live file watcher).
+
+  private renderPostsTabContent(container: HTMLElement): void {
+    const options = this.getProjectsOptions();
+
+    if (!options.baseFolder) {
+      const empty = container.createDiv({ cls: "warped-todo-posts-empty" });
+      empty.createEl("p", { text: "No base folder configured yet." });
+      const btn = empty.createEl("button", { text: "Open settings" });
+      btn.addEventListener("click", () => this.onOpenSettings());
+      return;
+    }
+
+    // As with renderProjectsList: the first switch to this tab kicks off
+    // ensurePostsScanned() in the background and renders immediately, so
+    // an empty cache here can just mean "hasn't finished yet."
+    if (this.postsSyncing && !this.postsSyncedOnce) {
+      container.createEl("p", { text: "Scanning posts…", cls: "warped-todo-posts-empty-msg" });
+      return;
+    }
+
+    if (!this.cachedHugoSite) {
+      const empty = container.createDiv({ cls: "warped-todo-posts-empty" });
+      empty.createEl("p", { text: "No Hugo site found under the configured base folder." });
+      empty.createEl("p", {
+        text: "Posts auto-detects a repo with a hugo.toml/config.yaml, at its root or under config/_default/.",
+        cls: "warped-todo-posts-empty-msg",
+      });
+      return;
+    }
+
+    const draftCount = this.cachedPosts.filter((p) => p.draft).length;
+    const filterRow = container.createDiv({ cls: "warped-todo-posts-filter-row" });
+    const pills = filterRow.createDiv({ cls: "warped-todo-posts-filter-pills" });
+    this.renderPostsFilterPill(pills, 'drafts', `Drafts ${draftCount}`);
+    this.renderPostsFilterPill(pills, 'all', `All ${this.cachedPosts.length}`);
+
+    const listEl = container.createDiv({ cls: "warped-todo-posts-list" });
+    this.renderPostRows(listEl);
+  }
+
+  private renderPostsFilterPill(container: HTMLElement, filter: 'drafts' | 'all', label: string): void {
+    const pill = container.createEl("span", {
+      cls: `tag-cloud-pill warped-todo-posts-filter-pill${this.postsFilter === filter ? ' is-active' : ''}`,
+      text: label,
+    });
+    pill.addEventListener("click", () => {
+      this.postsFilter = filter;
+      this.render();
+    });
+  }
+
+  private renderPostRows(listEl: HTMLElement): void {
+    const visible = this.postsFilter === 'drafts' ? this.cachedPosts.filter((p) => p.draft) : this.cachedPosts;
+
+    if (visible.length === 0) {
+      listEl.createEl("p", {
+        text: this.postsFilter === 'drafts' ? "No drafts." : "No posts found.",
+        cls: "warped-todo-posts-empty-msg",
+      });
+      return;
+    }
+
+    const bySection = new Map<string, HugoPost[]>();
+    for (const post of visible) {
+      const group = bySection.get(post.section) ?? [];
+      group.push(post);
+      bySection.set(post.section, group);
+    }
+
+    for (const section of [...bySection.keys()].sort()) {
+      const posts = bySection.get(section)!.sort((a, b) => b.mtimeMs - a.mtimeMs);
+      this.renderPostsGroupHeader(listEl, section, posts.length);
+      for (const post of posts) this.renderPostRow(listEl, post);
+    }
+  }
+
+  private renderPostsGroupHeader(listEl: HTMLElement, section: string, count: number): void {
+    const header = listEl.createDiv({ cls: "warped-todo-posts-group-header" });
+    const icon = header.createSpan({ cls: "todo-project-block-icon" });
+    setIcon(icon, "folder");
+    header.createSpan({ text: section, cls: "warped-todo-posts-group-name" });
+    header.createSpan({ text: String(count), cls: "warped-todo-posts-group-count" });
+  }
+
+  /**
+   * Mirrors renderProjectSummary's "list" variant: bold name on the title
+   * line, a dot-joined meta line below it (Projects: branch+status/counts/
+   * updated; Posts: updated/path). The one addition Posts needs that
+   * Projects doesn't is per-row tags — draft status now, room for real Hugo
+   * taxonomy tags later — so those sit on the title line as small pills,
+   * the same "tag" visual language `.tag-cloud-pill` already uses elsewhere
+   * in this sidebar, rather than as more dot-joined meta text.
+   */
+  private renderPostRow(listEl: HTMLElement, post: HugoPost): void {
+    const row = listEl.createDiv({ cls: "warped-todo-posts-row is-clickable" });
+
+    const titleLine = row.createDiv({ cls: "warped-todo-posts-row-title" });
+    titleLine.createSpan({ text: post.title, cls: "warped-todo-posts-row-name" });
+    if (post.draft) {
+      const tags = titleLine.createDiv({ cls: "warped-todo-posts-row-tags" });
+      tags.createSpan({ text: "draft", cls: "warped-todo-posts-tag warped-todo-posts-tag-draft" });
+    }
+
+    const updated = (moment as any)(post.mtimeMs);
+    const displayPath = this.cachedHugoSite ? relative(this.cachedHugoSite.contentDir, post.path) : post.path;
+    const metaLine = row.createDiv({ cls: "warped-todo-posts-row-meta" });
+    metaLine.createSpan({
+      text: formatRelativeShort(post.mtimeMs),
+      cls: "warped-todo-posts-row-updated",
+      attr: { title: updated.format("D MMM YYYY, h:mm A") },
+    });
+    metaLine.createSpan({ text: " · " });
+    metaLine.createSpan({ text: displayPath, cls: "warped-todo-posts-row-path", attr: { title: post.path } });
+
+    row.addEventListener("click", () => this.openHugoPost(post.path));
+    row.addEventListener("contextmenu", (evt) => {
+      evt.preventDefault();
+      const menu = new Menu();
+      menu.addItem((item) => item.setTitle("Open").setIcon("file-text").onClick(() => this.openHugoPost(post.path)));
+      menu.addItem((item) =>
+        item.setTitle("Reveal in Finder").setIcon("folder-open").onClick(() => this.revealProjectInFinder(post.path))
+      );
+      menu.showAtMouseEvent(evt);
+    });
+  }
+
+  private openHugoPost(path: string): void {
+    this.openProjectInApp(path, this.getProjectsOptions().editorApp, "editor");
+  }
+
+  private openNewHugoPostModal(): void {
+    if (!this.cachedHugoSite) return;
+    const site = this.cachedHugoSite;
+    const sections = [...new Set(this.cachedPosts.map((p) => p.section))].sort();
+    const defaultSection = sections[0] ?? "posts";
+
+    new NewHugoPostModal(this.app, sections, defaultSection, async (title, section) => {
+      try {
+        const post = await createPost(site, section, title);
+        this.postsSyncedOnce = false;
+        await this.ensurePostsScanned();
+        this.openHugoPost(post.path);
+      } catch (error) {
+        console.error("[Warped Todo]", "Failed to create post:", error);
+        showNotice("Couldn't create the post. See console for details.");
+      }
+    }).open();
   }
 
   private renderProjectsList(container: HTMLElement): void {

@@ -2,6 +2,34 @@
 
 All notable changes to the ␣⌘ Warped Command plugin will be documented in this file.
 
+## [0.50.0] - 2026-09-29
+
+### Added — Posts tab (Hugo)
+
+- A new Posts tab lists a Hugo site's content, grouped by content section
+  (folder), defaulting to a Drafts filter with an "All" toggle. The Hugo
+  site is auto-detected among the repos already found under the Projects
+  base folder (any repo with a `hugo.toml`/`config.yaml`/etc. at its root)
+  — no separate setting to configure.
+- Each row shows the post's title, a DRAFT badge, a compact relative edit
+  age ("~2d"), and its path relative to the site's `contentDir`. Clicking a
+  row opens the file in the configured Projects editor app; right-click
+  offers "Reveal in Finder."
+- "New post" (kebab menu, while on the Posts tab) creates
+  `content/<section>/<slug>.md` from the repo's own Hugo archetype
+  (`archetypes/<section>.md`, falling back to `archetypes/default.md`, then
+  a minimal built-in template), and opens the new file.
+- Read/navigate + create only — no draft-toggle mutation from the sidebar
+  (publishing stays a terminal operation), and no live file watcher yet;
+  the tab scans on open and on the existing "Refresh" action. See
+  DESIGN.md's Hugo Posts section for the full v1 scope.
+- Fixed: a race between the Projects and Posts tabs' lazy-sync calls (both
+  fire from `onOpen`) could leave Posts reporting "No Hugo site found" even
+  though the site was there — a concurrent caller now awaits the in-flight
+  sync instead of bailing out with stale/empty data.
+- Hugo detection now also recognizes the `config/_default/hugo.toml` (or
+  `config.yaml`/etc.) layout, not just a root-level config file.
+
 ## [0.49.0] - 2026-08-31
 
 ### Added — Plan section in the Projects detail view

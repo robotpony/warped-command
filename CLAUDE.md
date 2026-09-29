@@ -23,7 +23,7 @@ Vault selections are cached in `.install-vaults` for reuse with `--previous`.
 
 ## Architecture
 
-Warped Command is an Obsidian plugin for tracking TODOs, Ideas, and Principles across a vault, plus a Projects tab that syncs vault notes with git repos on disk. Vault items are tagged in markdown files (`#todo`, `#idea`, `#principle`); the plugin scans the vault, indexes them, and surfaces them in a custom sidebar with priority/focus/snooze workflows. The sidebar's Projects tab finds git repos under a configured base folder, syncs a note per project (frontmatter git facts + `#todo`/`#idea`/`#bug` items parsed from each repo's `BUGS.md`/`TODO.md`/etc.), and lets you act on those items from Obsidian, writing back to the repo file. Repo-matched projects with tracked items also surface as collapsible blocks directly in the TODOs/Ideas tabs, interleaved with vault items by priority. Desktop only (`isDesktopOnly: true`) — Projects needs Node `fs`/`child_process`. Full Projects design: [DESIGN.md](DESIGN.md).
+Warped Command is an Obsidian plugin for tracking TODOs, Ideas, and Principles across a vault, plus a Projects tab that syncs vault notes with git repos on disk. Vault items are tagged in markdown files (`#todo`, `#idea`, `#principle`); the plugin scans the vault, indexes them, and surfaces them in a custom sidebar with priority/focus/snooze workflows. The sidebar's Projects tab finds git repos under a configured base folder, syncs a note per project (frontmatter git facts + `#todo`/`#idea`/`#bug` items parsed from each repo's `BUGS.md`/`TODO.md`/etc.), and lets you act on those items from Obsidian, writing back to the repo file. Repo-matched projects with tracked items also surface as collapsible blocks directly in the TODOs/Ideas tabs, interleaved with vault items by priority. A fourth sidebar tab, Posts, auto-detects a Hugo site among those same scanned repos (any repo with a `hugo.toml`/`config.yaml`/etc. at its root) and lists its content grouped by section, defaulting to a Drafts filter, with "new post from archetype" — read/navigate only, no draft-toggle mutation. Desktop only (`isDesktopOnly: true`) — Projects and Posts need Node `fs`/`child_process`. Full Projects design, and the Hugo Posts section: [DESIGN.md](DESIGN.md).
 
 ### Entry point
 
@@ -33,7 +33,7 @@ Warped Command is an Obsidian plugin for tracking TODOs, Ideas, and Principles a
 - Wires `TodoProcessor` for completion/priority mutations
 - Builds `ProjectManager` for tag-based grouping, merged with repo-derived data
 - Builds `ProjectScanner`/`ProjectSyncManager` and starts the Projects file watcher (if a base folder is configured)
-- Registers the sidebar view (TODOs/Ideas/Projects tabs in one `ItemView`)
+- Registers the sidebar view (TODOs/Ideas/Projects/Posts tabs in one `ItemView`)
 - Registers `SlashCommandSuggest` (`/todo`, `/idea`, etc.) and `AtSuggest` (`@today`, `@handle`)
 - Registers CodeMirror extensions for header sort and checkbox/tag sync
 - Registers commands and the settings tab
@@ -45,7 +45,7 @@ Warped Command is an Obsidian plugin for tracking TODOs, Ideas, and Principles a
 | [TodoScanner.ts](src/TodoScanner.ts) | Scans vault for `#todo`/`#todone`/`#idea`/`#principle`. Maintains per-file caches, watches file changes, emits `todos-updated` events. |
 | [TodoProcessor.ts](src/TodoProcessor.ts) | Mutations: complete TODO (`#todo` → `#todone @date`, in place), change priority, snooze, move file. |
 | [ProjectManager.ts](src/ProjectManager.ts) | Aggregates items by project tag (excludes `#focus`/priority/lifecycle tags). Reads project description from project files. |
-| [SidebarView.ts](src/SidebarView.ts) | Custom `ItemView` with TODOs / Ideas / Projects tabs, tag cloud, immersive Focus Mode, summary stats. Repo-matched projects with synced items render as collapsible blocks interleaved into the TODOs/Ideas active lists by priority (`renderProjectBlockItem`/`compareSortableEntries`), not just in the Projects tab's own detail view. Snoozed items are an ordinary tag (no dedicated tab), excluded only from the Focus Mode queue. |
+| [SidebarView.ts](src/SidebarView.ts) | Custom `ItemView` with TODOs / Ideas / Projects / Posts tabs, tag cloud, immersive Focus Mode, summary stats. Repo-matched projects with synced items render as collapsible blocks interleaved into the TODOs/Ideas active lists by priority (`renderProjectBlockItem`/`compareSortableEntries`), not just in the Projects tab's own detail view. Snoozed items are an ordinary tag (no dedicated tab), excluded only from the Focus Mode queue. The Posts tab lists a Hugo site's content grouped by section, drafts-filtered by default; see `HugoScanner.ts`. |
 | [ContextMenuHandler.ts](src/ContextMenuHandler.ts) | Right-click menu on sidebar rows: priority, focus, snooze, move, copy, delete. |
 | [SlashCommandSuggest.ts](src/SlashCommandSuggest.ts) | Editor suggester for `/` at column 0: `/todo`, `/todos`, `/idea`, `/ideas`, `/today`, `/tomorrow`, `/callout`. |
 | [AtSuggest.ts](src/AtSuggest.ts) | Editor suggester for `@`: dates (`@today`, `@tomorrow`, `@yesterday`, `@<date>`) and team mentions (`@<handle>`). |
@@ -56,7 +56,7 @@ Warped Command is an Obsidian plugin for tracking TODOs, Ideas, and Principles a
 | [HeaderChecklistExtension.ts](src/HeaderChecklistExtension.ts) | CodeMirror extension syncing markdown checkbox state with `#todo`/`#todone` tags. |
 | [SlackConverter.ts](src/SlackConverter.ts) | Converts markdown → Slack mrkdwn for clipboard copy. |
 | [NotionConverter.ts](src/NotionConverter.ts) | Converts Obsidian markdown → plain markdown for Notion paste. |
-| [types.ts](src/types.ts) | `TodoItem`, `ProjectInfo`, `WarpedTodoSettings`, `DEFAULT_SETTINGS`. |
+| [types.ts](src/types.ts) | `TodoItem`, `ProjectInfo`, `WarpedTodoSettings`, `DEFAULT_SETTINGS`, `HugoSite`, `HugoPost`. |
 | [utils.ts](src/utils.ts) | Shared helpers: tag extraction, date formatting, priority math, checkbox parsing, `modifyExternalFileLine` (single-line writes outside the vault). |
 | [ProjectScanner.ts](src/ProjectScanner.ts) | Recursively finds git repos under a base folder (directory-`.git` only, submodules skipped); reads branch/status/remote via `git` (`execFile`). |
 | [ProjectMetadata.ts](src/ProjectMetadata.ts) | Repo title/stack detection; "recently updated" date (`getRepoLastUpdated`) from `CHANGELOG.md` mtime, falling back to `README.md`, then `PLAN.md`, then the vault project note's own mtime; `extractPlanSummary` (file-reading wrapper over `PlanParser`). |
@@ -68,6 +68,9 @@ Warped Command is an Obsidian plugin for tracking TODOs, Ideas, and Principles a
 | [ProjectQueue.ts](src/ProjectQueue.ts) | Appends a project note's selected text as a new open `#todo` item in that project's `TODO.md` (the "Send selection to project" command) — creates the file if missing. Picks flat-list vs. header-report block format per `StructuredFileParser.hasHeaderReportShape` on the *existing* file content, not a fixed format, so the appended item is actually recognized as an item regardless of which shape the file is already in. |
 | [SendToProjectModal.ts](src/SendToProjectModal.ts) | Single-field title prompt for "Send selection to project," pre-filled from the source note's name. |
 | [ProjectsSidebarView.ts](src/ProjectsSidebarView.ts) | Not a second sidebar — `ItemView`-independent helpers (display formatting, hand-typed-item grouping, the `GROUP_ORDER` constant) that `SidebarView.ts`'s Projects tab (list + per-project detail view, auto-follows the active file, merged synced/hand-typed item list, context menu with no "move") calls into. Kept separate so the logic is unit-testable without an `ItemView`. |
+| [HugoParser.ts](src/HugoParser.ts) | Pure, string-in: `parseHugoConfig` (site config → `contentDir`), `parsePostFrontmatter` (title/draft/date), `slugify`, `renderArchetype` (limited Go-template token substitution for "new post," not a full template engine). No `fs`, no YAML/TOML dependency — hand-rolled, like `PlanParser.ts`. |
+| [HugoScanner.ts](src/HugoScanner.ts) | fs orchestration for the Posts tab: `locateHugoSite` (first `ScannedProject` tagged `"Hugo"`), `readHugoSite`/`scanPosts` (walks `contentDir`, excludes `_index.md`), `createPost` (writes `content/<section>/<slug>.md` from the repo's own archetype). |
+| [NewHugoPostModal.ts](src/NewHugoPostModal.ts) | Single-field title + section-dropdown prompt for the Posts tab's "New post," mirrors `SendToProjectModal.ts`. |
 
 ### Data flow
 

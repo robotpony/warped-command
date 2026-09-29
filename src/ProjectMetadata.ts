@@ -122,6 +122,21 @@ function dirHasFileWithExt(dirPath: string, exts: Set<string>): boolean {
   return false;
 }
 
+// Hugo's newer config/_default/ layout — recommended by Hugo's own docs once
+// a site needs more than one trivial file — isn't a flat root marker file,
+// so it needs its own check beyond scanDirForTech's TECH_FILES table. Same
+// filenames TECH_FILES already lists for the root case, one directory level
+// down. (HugoScanner.ts's own findConfigFile mirrors this same fallback when
+// it actually reads the file, once this tag has matched the repo.)
+const HUGO_CONFIG_DIR_FILENAMES = [
+  "hugo.toml", "hugo.yaml", "hugo.yml",
+  "config.toml", "config.yaml", "config.yml",
+];
+
+function hasHugoConfigDir(projectPath: string): boolean {
+  return HUGO_CONFIG_DIR_FILENAMES.some((name) => existsSync(join(projectPath, "config", "_default", name)));
+}
+
 function hasPythonFiles(projectPath: string): boolean {
   const dirs = [".", "src", "lib", "tests", "test", "scripts", "bin"];
   return dirs.some((d) => dirHasFileWithExt(join(projectPath, d), new Set([".py"])));
@@ -202,11 +217,18 @@ export function detectStack(projectPath: string, excludeDirs: string[] = []): st
     else if (hasPythonExecutables(projectPath)) technologies.push("Python");
   }
 
+  if (!technologies.includes("Hugo") && hasHugoConfigDir(projectPath)) {
+    technologies.push("Hugo");
+  }
+
   for (const subdir of subdirsForTechScan(projectPath, excludeDirs)) {
     const subdirPath = join(projectPath, subdir);
     scanDirForTech(subdirPath, technologies);
     if (!technologies.includes("Python") && hasPythonFiles(subdirPath)) {
       technologies.push("Python");
+    }
+    if (!technologies.includes("Hugo") && hasHugoConfigDir(subdirPath)) {
+      technologies.push("Hugo");
     }
   }
 
