@@ -1990,15 +1990,42 @@
   background-color: color-mix(in srgb, var(--text-warning, #e0a458) 15%, transparent);
 }
 
-/* Dot-joined chunks below the name, matching .warped-todo-project-row-meta;
-   Projects: branch+status/counts/updated. Posts: updated/path. */
+/* Below the name — same font-size, colour and top gap as
+   .warped-todo-project-row-meta. Projects dot-joins branch+status/counts/
+   updated here; Posts has only the updated chunk (the filename moved to
+   its own line below, matching .warped-todo-project-row-file). */
 .warped-todo-posts-row-meta {
   color: var(--text-muted);
-  font-size: var(--font-ui-smaller);
+  font-size: 0.85em;
+  margin-top: var(--size-2-1);
 }
 
-.warped-todo-posts-row-path {
-  font-family: var(--font-monospace);
+/* Fainter than the rest of the line, same as .warped-todo-project-row-updated. */
+.warped-todo-posts-row-updated {
+  color: var(--text-faint);
+}
+
+/* Excerpt — same list-row typography as
+   .warped-todo-project-row .warped-todo-project-readme-summary. */
+.warped-todo-posts-row-summary {
+  margin-top: var(--size-2-1);
+  color: var(--text-muted);
+  font-size: 0.85em;
+  line-height: 1.5;
+}
+
+.warped-todo-posts-row-summary p {
+  margin: 0;
+}
+
+/* Filename + arrow, its own line at the bottom of the row — same shape as
+   .warped-todo-project-row-file. .header-filename and .todo-orphan-
+   section-link are shared classes, styled elsewhere. */
+.warped-todo-posts-row-file {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: var(--size-2-1);
 }
 
 .warped-todo-project-row {

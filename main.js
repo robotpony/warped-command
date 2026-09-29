@@ -4714,10 +4714,36 @@ var import_path5 = require("path");
 
 // src/HugoParser.ts
 var DEFAULT_CONTENT_DIR = "content";
+var SUMMARY_MAX_CHARS2 = 220;
 function unquoteScalar(value) {
   var _a;
   const match = (_a = value.match(/^"(.*)"$/)) != null ? _a : value.match(/^'(.*)'$/);
   return match ? match[1] : value;
+}
+function truncateSummary2(text, max) {
+  if (text.length <= max)
+    return text;
+  const cut = text.slice(0, max);
+  const lastSpace = cut.lastIndexOf(" ");
+  return `${cut.slice(0, lastSpace > 0 ? lastSpace : max)}\u2026`;
+}
+function extractBodyExcerpt(body) {
+  const excerptLines = [];
+  for (const line of body.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      if (excerptLines.length > 0)
+        break;
+      continue;
+    }
+    if (/^#{1,6}\s/.test(trimmed))
+      break;
+    excerptLines.push(trimmed);
+  }
+  if (excerptLines.length === 0)
+    return null;
+  const text = excerptLines.join(" ").replace(/\s+/g, " ").trim();
+  return text ? truncateSummary2(text, SUMMARY_MAX_CHARS2) : null;
 }
 function parseHugoConfig(content) {
   const tomlMatch = content.match(/^\s*contentDir\s*=\s*["']([^"']+)["']/m);
@@ -4729,12 +4755,15 @@ function parseHugoConfig(content) {
   return { contentDir: DEFAULT_CONTENT_DIR };
 }
 function parsePostFrontmatter(content) {
-  var _a, _b;
+  var _a, _b, _c, _d, _e;
   const yamlMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
   const tomlMatch = !yamlMatch ? content.match(/^\+\+\+\r?\n([\s\S]*?)\r?\n\+\+\+\r?\n?/) : null;
   const block = (_a = yamlMatch == null ? void 0 : yamlMatch[1]) != null ? _a : tomlMatch == null ? void 0 : tomlMatch[1];
-  if (block === void 0)
-    return { draft: false };
+  const delimiterMatch = yamlMatch != null ? yamlMatch : tomlMatch;
+  const body = content.slice((_c = (_b = delimiterMatch == null ? void 0 : delimiterMatch[0]) == null ? void 0 : _b.length) != null ? _c : 0);
+  if (block === void 0) {
+    return { draft: false, summary: (_d = extractBodyExcerpt(body)) != null ? _d : void 0 };
+  }
   const separator = tomlMatch ? "=" : ":";
   const entries = /* @__PURE__ */ new Map();
   for (const line of block.split("\n")) {
@@ -4746,10 +4775,12 @@ function parsePostFrontmatter(content) {
       continue;
     entries.set(key, unquoteScalar(line.slice(idx + 1).trim()));
   }
+  const frontmatterSummary = entries.get("description") || entries.get("summary");
   return {
     title: entries.get("title") || void 0,
-    draft: ((_b = entries.get("draft")) == null ? void 0 : _b.toLowerCase()) === "true",
-    date: entries.get("date") || entries.get("lastmod") || void 0
+    draft: ((_e = entries.get("draft")) == null ? void 0 : _e.toLowerCase()) === "true",
+    date: entries.get("date") || entries.get("lastmod") || void 0,
+    summary: frontmatterSummary || extractBodyExcerpt(body) || void 0
   };
 }
 function slugify(title) {
@@ -4776,10 +4807,6 @@ var CONFIG_FILE_CANDIDATES = [
   "config.yml"
 ];
 var EXCLUDED_FILENAME = "_index.md";
-function locateHugoSite(scannedProjects) {
-  var _a;
-  return (_a = scannedProjects.find((p) => p.stack.includes("Hugo"))) != null ? _a : null;
-}
 function findConfigFile(repoPath) {
   for (const name of CONFIG_FILE_CANDIDATES) {
     const candidate = (0, import_path5.join)(repoPath, name);
@@ -4840,7 +4867,8 @@ async function scanPosts(site) {
         path,
         section: sectionFor(site.contentDir, path),
         draft: frontmatter.draft,
-        mtimeMs
+        mtimeMs,
+        summary: frontmatter.summary
       });
     } catch (e) {
     }
@@ -4865,7 +4893,8 @@ async function createPost(site, section, title) {
     path: postPath,
     section,
     draft: frontmatter.draft,
-    mtimeMs: (0, import_fs4.statSync)(postPath).mtimeMs
+    mtimeMs: (0, import_fs4.statSync)(postPath).mtimeMs,
+    summary: frontmatter.summary
   };
 }
 
@@ -4927,7 +4956,7 @@ var PROJECT_PAGE_ICON_TITLE = "Project page (a note in this vault)";
 var PROJECT_LINK_ICON_TITLE = "Project link (synced from a repo outside the vault)";
 var TodoSidebarView = class extends import_obsidian14.ItemView {
   constructor(leaf, scanner, processor, projectManager, projectScanner, syncManager, getProjectsOptions, onOpenSettings, priorityTags, activeTodosLimit, makeLinksClickable, onShowAbout, onShowStats, getMoveHistory = () => [], teamManager, defaultAssignee = "", focusQueueLimit = 1, focusModeActive = false, setFocusModeActive = async () => {
-  }, defaultProjectsSortKey = "recentlyUpdated") {
+  }, defaultProjectsSortKey = "recentlyUpdated", getPostsOptions = () => ({ editorApp: "Visual Studio Code" })) {
     super(leaf);
     this.updateListener = null;
     // True while a Complete/Skip transition animation is in flight; suppresses
@@ -4991,10 +5020,6 @@ var TodoSidebarView = class extends import_obsidian14.ItemView {
     // switched away from the Projects tab could get silently yanked back into
     // detail mode by the next such event.
     this.lastKnownProjectFilePath = null;
-    // ===== Posts tab state =====
-    // Read-only + "new post" only (no draft-toggle mutation — see DESIGN.md's
-    // Hugo Posts section). No detail view, unlike Projects: a row click opens
-    // the file externally rather than navigating within the sidebar.
     this.postsFilter = "drafts";
     this.cachedHugoSite = null;
     this.cachedPosts = [];
@@ -5025,6 +5050,7 @@ var TodoSidebarView = class extends import_obsidian14.ItemView {
     this.projectScanner = projectScanner;
     this.syncManager = syncManager;
     this.getProjectsOptions = getProjectsOptions;
+    this.getPostsOptions = getPostsOptions;
     this.onOpenSettings = onOpenSettings;
     this.activeTodosLimit = activeTodosLimit;
     this.makeLinksClickable = makeLinksClickable;
@@ -6530,9 +6556,9 @@ var TodoSidebarView = class extends import_obsidian14.ItemView {
           if (this.getProjectsOptions().baseFolder) {
             this.projectsSyncedOnce = false;
             rescans.push(this.ensureProjectsSynced());
-            this.postsSyncedOnce = false;
-            rescans.push(this.ensurePostsScanned());
           }
+          this.postsSyncedOnce = false;
+          rescans.push(this.ensurePostsScanned());
           await Promise.all(rescans);
           setTimeout(() => menuBtn.removeClass("rotating"), 500);
         });
@@ -6907,14 +6933,13 @@ var TodoSidebarView = class extends import_obsidian14.ItemView {
     await this.projectsSyncPromise;
   }
   /**
-   * Lazy-loads the Posts tab's data: find the Hugo site among the repos
-   * Projects already scans, read its config, list its posts. Depends on
-   * `scannedProjects` (locateHugoSite filters that list for a "Hugo" stack
-   * tag), so it awaits ensureProjectsSynced first — see that method's own
-   * comment for why a plain boolean guard isn't enough for a dependent
-   * caller, and why this method needs the identical promise-cache shape for
-   * its own concurrent callers (onOpen and switchTab('posts') can both fire
-   * this close together too).
+   * Lazy-loads the Posts tab's data: check the current vault's own root for
+   * a Hugo config file, read it, list its posts. Deliberately independent
+   * of ensureProjectsSynced/scannedProjects — see HugoScanner.ts's module
+   * comment for why the two must never share a scan again. Kept the same
+   * promise-cache shape as ensureProjectsSynced regardless, since Posts
+   * still has its own concurrent-caller problem to solve (onOpen and
+   * switchTab('posts') can fire this close together).
    */
   async ensurePostsScanned() {
     if (this.postsSyncedOnce)
@@ -6924,11 +6949,11 @@ var TodoSidebarView = class extends import_obsidian14.ItemView {
       return;
     }
     this.postsSyncing = true;
-    this.postsSyncPromise = this.ensureProjectsSynced().then(async () => {
-      const hugoRepo = locateHugoSite(this.scannedProjects);
-      this.cachedHugoSite = hugoRepo ? await readHugoSite(hugoRepo.localPath) : null;
+    this.postsSyncPromise = (async () => {
+      const basePath = this.vaultBasePath();
+      this.cachedHugoSite = basePath ? await readHugoSite(basePath) : null;
       this.cachedPosts = this.cachedHugoSite ? await scanPosts(this.cachedHugoSite) : [];
-    }).catch((error) => {
+    })().catch((error) => {
       console.error("[Warped Todo]", "Hugo posts scan failed:", error);
       showNotice2("Couldn't scan Hugo posts. See console for details.");
     }).finally(() => {
@@ -7048,23 +7073,15 @@ var TodoSidebarView = class extends import_obsidian14.ItemView {
   // Read/navigate + "new post" only — see DESIGN.md's Hugo Posts section for
   // the full v1 scope (no draft-toggle mutation, no live file watcher).
   renderPostsTabContent(container) {
-    const options = this.getProjectsOptions();
-    if (!options.baseFolder) {
-      const empty = container.createDiv({ cls: "warped-todo-posts-empty" });
-      empty.createEl("p", { text: "No base folder configured yet." });
-      const btn = empty.createEl("button", { text: "Open settings" });
-      btn.addEventListener("click", () => this.onOpenSettings());
-      return;
-    }
     if (this.postsSyncing && !this.postsSyncedOnce) {
-      container.createEl("p", { text: "Scanning posts\u2026", cls: "warped-todo-posts-empty-msg" });
+      container.createEl("p", { text: "Scanning for a Hugo site\u2026", cls: "warped-todo-posts-empty-msg" });
       return;
     }
     if (!this.cachedHugoSite) {
       const empty = container.createDiv({ cls: "warped-todo-posts-empty" });
-      empty.createEl("p", { text: "No Hugo site found under the configured base folder." });
+      empty.createEl("p", { text: "No Hugo site found in this vault." });
       empty.createEl("p", {
-        text: "Posts auto-detects a repo with a hugo.toml/config.yaml, at its root or under config/_default/.",
+        text: "Posts assumes the Hugo site is the vault itself \u2014 it looks for a hugo.toml/config.yaml (at the vault root, or under config/_default/) and nowhere else.",
         cls: "warped-todo-posts-empty-msg"
       });
       return;
@@ -7135,28 +7152,115 @@ var TodoSidebarView = class extends import_obsidian14.ItemView {
       tags.createSpan({ text: "draft", cls: "warped-todo-posts-tag warped-todo-posts-tag-draft" });
     }
     const updated = (0, import_obsidian14.moment)(post.mtimeMs);
-    const displayPath = this.cachedHugoSite ? (0, import_path6.relative)(this.cachedHugoSite.contentDir, post.path) : post.path;
     const metaLine = row.createDiv({ cls: "warped-todo-posts-row-meta" });
     metaLine.createSpan({
       text: formatRelativeShort(post.mtimeMs),
       cls: "warped-todo-posts-row-updated",
       attr: { title: updated.format("D MMM YYYY, h:mm A") }
     });
-    metaLine.createSpan({ text: " \xB7 " });
-    metaLine.createSpan({ text: displayPath, cls: "warped-todo-posts-row-path", attr: { title: post.path } });
+    if (post.summary) {
+      const summaryEl = row.createDiv({ cls: "warped-todo-posts-row-summary" });
+      void this.renderPostSummary(summaryEl, post);
+    }
+    if (this.cachedHugoSite) {
+      const sectionDir = post.section === "(root)" ? this.cachedHugoSite.contentDir : (0, import_path6.join)(this.cachedHugoSite.contentDir, post.section);
+      const fileRow = row.createDiv({ cls: "warped-todo-posts-row-file" });
+      fileRow.createSpan({
+        cls: "header-filename",
+        text: (0, import_path6.relative)(sectionDir, post.path),
+        attr: { title: post.path }
+      });
+      const link = fileRow.createEl("a", {
+        cls: "todo-orphan-section-link",
+        text: "\u2192",
+        href: "#",
+        attr: { "aria-label": `Open ${post.path}` }
+      });
+      link.addEventListener("click", (evt) => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        this.openHugoPost(post.path);
+      });
+    }
     row.addEventListener("click", () => this.openHugoPost(post.path));
     row.addEventListener("contextmenu", (evt) => {
       evt.preventDefault();
       const menu = new import_obsidian14.Menu();
-      menu.addItem((item) => item.setTitle("Open").setIcon("file-text").onClick(() => this.openHugoPost(post.path)));
+      if (this.resolveVaultFile(post.path)) {
+        menu.addItem(
+          (item) => item.setTitle("Open in Obsidian").setIcon("file-text").onClick(() => this.openHugoPost(post.path))
+        );
+      }
+      menu.addItem(
+        (item) => item.setTitle("Open in Editor").setIcon("code").onClick(() => {
+          this.openProjectInApp(post.path, this.getPostsOptions().editorApp, "editor");
+        })
+      );
+      menu.addItem(
+        (item) => item.setTitle("Open in default app").setIcon("external-link").onClick(() => {
+          this.openExternalProjectFile(post.path);
+        })
+      );
       menu.addItem(
         (item) => item.setTitle("Reveal in Finder").setIcon("folder-open").onClick(() => this.revealProjectInFinder(post.path))
       );
       menu.showAtMouseEvent(evt);
     });
   }
+  /** Mirrors renderProjectReadmeSummary — same MarkdownRenderer treatment for a post's excerpt. */
+  async renderPostSummary(container, post) {
+    if (!post.summary)
+      return;
+    const component = new import_obsidian14.Component();
+    component.load();
+    await import_obsidian14.MarkdownRenderer.render(this.app, post.summary, container, post.path, component);
+  }
+  /**
+   * A Hugo post's file lives on disk via Node `fs` (see HugoScanner.ts), not
+   * necessarily inside the vault — Projects/Posts base-folder scanning is
+   * deliberately vault-independent. When it *does* happen to fall under the
+   * vault's own root (the common case for this feature: the Hugo site
+   * itself opened as the vault), resolve it to a real TFile so it can open
+   * in Obsidian's own editor like any other note. Same basePath-relativize
+   * approach main.ts's chooseVaultPath uses for its file picker.
+   */
+  /**
+   * The current vault's own absolute base path (desktop only — this plugin
+   * is `isDesktopOnly: true`, so a non-`FileSystemAdapter` vault shouldn't
+   * occur, but null is the safe fallback if it ever does). Also *the* scope
+   * boundary for Posts: `ensurePostsScanned` calls `readHugoSite` with
+   * exactly this path and nothing else, per HugoScanner.ts's module comment.
+   */
+  vaultBasePath() {
+    const adapter = this.app.vault.adapter;
+    return adapter instanceof import_obsidian14.FileSystemAdapter ? adapter.getBasePath() : null;
+  }
+  resolveVaultFile(absPath) {
+    const basePath = this.vaultBasePath();
+    if (!basePath)
+      return null;
+    if (absPath !== basePath && !absPath.startsWith(basePath + import_path6.sep))
+      return null;
+    const relPath = absPath === basePath ? "" : absPath.slice(basePath.length + 1).split(import_path6.sep).join("/");
+    const file = this.app.vault.getAbstractFileByPath(relPath);
+    return file instanceof import_obsidian14.TFile ? file : null;
+  }
+  /**
+   * Left-click target for a Posts row. Opens in Obsidian's own editor when
+   * the post resolves to a vault file; otherwise there's no Obsidian editor
+   * to open it in, so this falls back to the configured external editor
+   * app, same as the row used to always do before "open in Obsidian"
+   * existed — a notice explains why, so it doesn't look like nothing
+   * happened.
+   */
   openHugoPost(path) {
-    this.openProjectInApp(path, this.getProjectsOptions().editorApp, "editor");
+    const vaultFile = this.resolveVaultFile(path);
+    if (vaultFile) {
+      void this.app.workspace.getLeaf(false).openFile(vaultFile);
+      return;
+    }
+    showNotice2("Not part of this vault \u2014 opening in your configured editor app instead.");
+    this.openProjectInApp(path, this.getPostsOptions().editorApp, "editor");
   }
   openNewHugoPostModal() {
     var _a;
@@ -7910,7 +8014,9 @@ var DEFAULT_SETTINGS = {
   projectsEditorApp: "Visual Studio Code",
   defaultProjectsSortKey: "recentlyUpdated",
   helpNoteLastSeenVersion: "",
-  projectSyncState: {}
+  projectSyncState: {},
+  // Posts (Hugo) — deliberately separate from the Projects extension above.
+  postsEditorApp: "Visual Studio Code"
 };
 
 // src/SlackConverter.ts
@@ -8651,7 +8757,8 @@ var WarpedTodoPlugin = class extends import_obsidian16.Plugin {
           this.settings.focusModeActive = active;
           await this.saveSettings();
         },
-        this.settings.defaultProjectsSortKey
+        this.settings.defaultProjectsSortKey,
+        () => this.postsOptions()
       )
     );
     this.registerEditorSuggest(new SlashCommandSuggest(this.app, this.settings));
@@ -8860,6 +8967,12 @@ var WarpedTodoPlugin = class extends import_obsidian16.Plugin {
       autoOpenOnLinkedNote: this.settings.autoOpenProjectsOnLinkedNote,
       terminalApp: this.settings.projectsTerminalApp,
       editorApp: this.settings.projectsEditorApp
+    };
+  }
+  /** Builds PostsSidebarOptions from current settings — deliberately its own method, not folded into projectsSyncOptions(). See HugoScanner.ts's module comment. */
+  postsOptions() {
+    return {
+      editorApp: this.settings.postsEditorApp
     };
   }
   /**
@@ -9337,6 +9450,13 @@ var WarpedTodoSettingTab = class extends import_obsidian16.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
+    containerEl.createEl("h3", { text: "Posts" });
+    new import_obsidian16.Setting(containerEl).setName("Editor app").setDesc(`App name used by the Posts tab's "Open in Editor" action (macOS only). Independent of the Projects section's "Editor app" above \u2014 Posts doesn't read that setting.`).addText(
+      (text) => text.setPlaceholder("Visual Studio Code").setValue(this.plugin.settings.postsEditorApp).onChange(async (value) => {
+        this.plugin.settings.postsEditorApp = value.trim() || "Visual Studio Code";
+        await this.plugin.saveSettings();
+      })
+    );
     containerEl.createEl("h3", { text: "Focus Mode" });
     new import_obsidian16.Setting(containerEl).setName("Focus queue limit").setDesc("How many items to show at once in Focus Mode (1\u20135). 1 means strict single-task focus.").addSlider(
       (slider) => slider.setLimits(1, 5, 1).setValue(this.plugin.settings.focusQueueLimit).setDynamicTooltip().onChange(async (value) => {

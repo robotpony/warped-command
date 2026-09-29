@@ -29,6 +29,7 @@ import {
   WarpedTodoSettings,
   DEFAULT_SETTINGS,
   TodoItem,
+  PostsSidebarOptions,
 } from "./src/types";
 import { convertToSlackMarkdown } from "./src/SlackConverter";
 import { convertToNotionMarkdown } from "./src/NotionConverter";
@@ -264,7 +265,8 @@ export default class WarpedTodoPlugin extends Plugin {
             this.settings.focusModeActive = active;
             await this.saveSettings();
           },
-          this.settings.defaultProjectsSortKey
+          this.settings.defaultProjectsSortKey,
+          () => this.postsOptions()
         )
     );
 
@@ -522,6 +524,13 @@ export default class WarpedTodoPlugin extends Plugin {
       autoOpenOnLinkedNote: this.settings.autoOpenProjectsOnLinkedNote,
       terminalApp: this.settings.projectsTerminalApp,
       editorApp: this.settings.projectsEditorApp,
+    };
+  }
+
+  /** Builds PostsSidebarOptions from current settings — deliberately its own method, not folded into projectsSyncOptions(). See HugoScanner.ts's module comment. */
+  postsOptions(): PostsSidebarOptions {
+    return {
+      editorApp: this.settings.postsEditorApp,
     };
   }
 
@@ -1252,6 +1261,28 @@ class WarpedTodoSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         });
       });
+
+    // Posts section — deliberately separate from Projects above: Posts
+    // assumes the Hugo site (if there is one) is the vault itself, and
+    // never reads projectsBaseFolder or anything else from the Projects
+    // extension. See HugoScanner.ts's module comment for why the two must
+    // stay independent (an earlier version borrowed Projects' broad,
+    // multi-repo scan for this, and a repo elsewhere under that scan could
+    // silently shadow the real site).
+    containerEl.createEl("h3", { text: "Posts" });
+
+    new Setting(containerEl)
+      .setName("Editor app")
+      .setDesc("App name used by the Posts tab's \"Open in Editor\" action (macOS only). Independent of the Projects section's \"Editor app\" above — Posts doesn't read that setting.")
+      .addText((text) =>
+        text
+          .setPlaceholder("Visual Studio Code")
+          .setValue(this.plugin.settings.postsEditorApp)
+          .onChange(async (value) => {
+            this.plugin.settings.postsEditorApp = value.trim() || "Visual Studio Code";
+            await this.plugin.saveSettings();
+          })
+      );
 
     // Focus Mode section
     containerEl.createEl("h3", { text: "Focus Mode" });

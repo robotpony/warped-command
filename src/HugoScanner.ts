@@ -1,9 +1,31 @@
 import { existsSync, statSync } from "fs";
 import { mkdir, readFile, readdir, writeFile } from "fs/promises";
 import { basename, extname, join, relative } from "path";
-import { ScannedProject } from "./ProjectScanner";
 import { HugoPost, HugoSite } from "./types";
 import { DEFAULT_ARCHETYPE, parseHugoConfig, parsePostFrontmatter, renderArchetype, slugify } from "./HugoParser";
+
+/**
+ * Scope: vault-only, deliberately not the Projects extension.
+ *
+ * This module used to find "the" Hugo site by filtering the Projects
+ * extension's repo scan for a `"Hugo"` stack tag (`ProjectScanner.scan()`'s
+ * result) — Projects' own base-folder scan is deliberately broad, reaching
+ * every repo under a configured folder, by design (that's the point of it:
+ * tracking work across many repos on disk). Posts borrowed that scan
+ * instead of doing its own, narrower detection, and that borrowing was the
+ * bug: a *different* repo entirely, one that also had a Hugo config file
+ * (e.g. this plugin's own repo, once seeded with a test fixture), could sort
+ * earlier in that scan and silently shadow the real site the vault was
+ * pointed at — Projects' broad scope leaking into a feature that has no
+ * business scanning anywhere but the current vault.
+ *
+ * So: `readHugoSite` here is now always called with the *vault's own base
+ * path* (see `SidebarView.vaultBasePath()`), never a Projects scan result.
+ * Posts assumes the Hugo site, if there is one, *is* the vault — one
+ * specific, known folder, not a search across a folder of unrelated repos.
+ * No `ProjectScanner`/`ScannedProject` import here at all, on purpose:
+ * reintroducing one is exactly the mistake to not repeat.
+ */
 
 // Priority order matters: modern Hugo (v0.109+) prefers `hugo.*` over the
 // older `config.*` naming, and hugo.toml before hugo.yaml/yml mirrors what
@@ -16,17 +38,6 @@ const CONFIG_FILE_CANDIDATES = [
 // Section-index/list pages, not posts — see DESIGN.md's Hugo Posts section
 // for why these are excluded while an ordinary leaf-bundle index.md isn't.
 const EXCLUDED_FILENAME = "_index.md";
-
-/**
- * First repo among an existing Projects scan whose detected stack includes
- * "Hugo" (`ProjectMetadata.ts`'s `TECH_FILES` table already tags any repo
- * with a `hugo.toml`/`config.yaml`/etc. at its root). Assumes one Hugo site
- * per vault — the first match wins; a monorepo with more than one Hugo
- * config just won't see its other sites.
- */
-export function locateHugoSite(scannedProjects: ScannedProject[]): ScannedProject | null {
-  return scannedProjects.find((p) => p.stack.includes("Hugo")) ?? null;
-}
 
 function findConfigFile(repoPath: string): string | null {
   for (const name of CONFIG_FILE_CANDIDATES) {
@@ -44,7 +55,11 @@ function findConfigFile(repoPath: string): string | null {
   return null;
 }
 
-/** Reads and parses the repo's Hugo config to resolve its content directory. Null when no config file is found (shouldn't happen for a repo locateHugoSite matched, but the scan that produced `stack` and this read are separate passes). */
+/**
+ * Reads and parses a Hugo config to resolve its content directory. Called
+ * with the vault's own base path — see this file's module comment. Null
+ * when no config file is found there (no Hugo site in this vault).
+ */
 export async function readHugoSite(repoPath: string): Promise<HugoSite | null> {
   const configPath = findConfigFile(repoPath);
   if (!configPath) return null;
@@ -98,6 +113,7 @@ export async function scanPosts(site: HugoSite): Promise<HugoPost[]> {
         section: sectionFor(site.contentDir, path),
         draft: frontmatter.draft,
         mtimeMs,
+        summary: frontmatter.summary,
       });
     } catch {
       // Unreadable file — skip rather than fail the whole scan over one post.
@@ -135,5 +151,6 @@ export async function createPost(site: HugoSite, section: string, title: string)
     section,
     draft: frontmatter.draft,
     mtimeMs: statSync(postPath).mtimeMs,
+    summary: frontmatter.summary,
   };
 }

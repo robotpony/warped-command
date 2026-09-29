@@ -1,5 +1,5 @@
-import { ItemView, WorkspaceLeaf, TFile, Menu, Modal, MarkdownRenderer, Component, moment, setIcon } from "obsidian";
-import { relative } from "path";
+import { ItemView, WorkspaceLeaf, TFile, Menu, Modal, MarkdownRenderer, Component, moment, setIcon, FileSystemAdapter } from "obsidian";
+import { join, relative, sep } from "path";
 import { TodoScanner } from "./TodoScanner";
 import { TodoProcessor } from "./TodoProcessor";
 import { ProjectManager, projectFilePath } from "./ProjectManager";
@@ -33,10 +33,10 @@ import {
   calculateLaterPriority as calculateProjectLaterPriority,
 } from "./ProjectsSidebarView";
 import { TeamManager } from "./TeamManager";
-import { TodoItem, ProjectInfo, ItemRenderConfig, FocusQueueState, SortableEntry, HugoSite, HugoPost } from "./types";
+import { TodoItem, ProjectInfo, ItemRenderConfig, FocusQueueState, SortableEntry, HugoSite, HugoPost, PostsSidebarOptions } from "./types";
 import { ContextMenuHandler } from "./ContextMenuHandler";
 import { getPriorityValue, compareTodoItems, compareWithEffectivePriority, compareSortableEntries, hasTag, openFileAtLine, extractMentions, resolveMentions, resolveEffectiveMentions, showNotice, getTagColourInfo, extractCompletionDate, buildFocusQueue, getItemDate, tallyProjectTags, itemMatchesTagFilter, pluralize, formatRelativeShort } from "./utils";
-import { locateHugoSite, readHugoSite, scanPosts, createPost } from "./HugoScanner";
+import { readHugoSite, scanPosts, createPost } from "./HugoScanner";
 import { NewHugoPostModal } from "./NewHugoPostModal";
 
 export const VIEW_TYPE_TODO_SIDEBAR = "warped-todo-sidebar";
@@ -144,7 +144,11 @@ export class TodoSidebarView extends ItemView {
   // ===== Posts tab state =====
   // Read-only + "new post" only (no draft-toggle mutation — see DESIGN.md's
   // Hugo Posts section). No detail view, unlike Projects: a row click opens
-  // the file externally rather than navigating within the sidebar.
+  // the file externally rather than navigating within the sidebar. Own
+  // settings closure, deliberately not getProjectsOptions — see
+  // HugoScanner.ts's module comment for why Posts never reads anything
+  // from the Projects extension.
+  private getPostsOptions: () => PostsSidebarOptions;
   private postsFilter: 'drafts' | 'all' = 'drafts';
   private cachedHugoSite: HugoSite | null = null;
   private cachedPosts: HugoPost[] = [];
@@ -173,7 +177,8 @@ export class TodoSidebarView extends ItemView {
     focusQueueLimit: number = 1,
     focusModeActive: boolean = false,
     setFocusModeActive: (active: boolean) => Promise<void> = async () => {},
-    defaultProjectsSortKey: ProjectSortKey = "recentlyUpdated"
+    defaultProjectsSortKey: ProjectSortKey = "recentlyUpdated",
+    getPostsOptions: () => PostsSidebarOptions = () => ({ editorApp: "Visual Studio Code" })
   ) {
     super(leaf);
     this.scanner = scanner;
@@ -182,6 +187,7 @@ export class TodoSidebarView extends ItemView {
     this.projectScanner = projectScanner;
     this.syncManager = syncManager;
     this.getProjectsOptions = getProjectsOptions;
+    this.getPostsOptions = getPostsOptions;
     this.onOpenSettings = onOpenSettings;
     this.activeTodosLimit = activeTodosLimit;
     this.makeLinksClickable = makeLinksClickable;
@@ -829,9 +835,10 @@ export class TodoSidebarView extends ItemView {
     ideasTab.addEventListener("click", () => this.switchTab('ideas'));
 
     // Posts is a tab like Ideas — reads a Hugo site's content/ folder,
-    // auto-detected among the repos Projects already scans (see
-    // locateHugoSite in HugoScanner.ts). No detail view, so a plain
-    // switchTab (not switchToProjectsTab's jump-to-detail machinery) is enough.
+    // detected at the current vault's own root only (see HugoScanner.ts's
+    // module comment for why this must never reuse Projects' scan). No
+    // detail view, so a plain switchTab (not switchToProjectsTab's
+    // jump-to-detail machinery) is enough.
     const postsTab = tabNav.createEl("button", {
       cls: `sidebar-tab-btn${!this.focusModeActive && this.activeTab === 'posts' ? ' active' : ''}`,
       attr: { "aria-label": "Posts" },
@@ -2205,12 +2212,13 @@ export class TodoSidebarView extends ItemView {
             if (this.getProjectsOptions().baseFolder) {
               this.projectsSyncedOnce = false;
               rescans.push(this.ensureProjectsSynced());
-              // Posts depends on scannedProjects (locateHugoSite filters it
-              // for a "Hugo" stack tag) — reset alongside Projects so a
-              // newly-added Hugo site, or new/edited posts, show up too.
-              this.postsSyncedOnce = false;
-              rescans.push(this.ensurePostsScanned());
             }
+            // Posts is vault-scoped, independent of Projects' base folder
+            // (see HugoScanner.ts's module comment) — always reset it here,
+            // so a newly-added Hugo config, or a new/edited post, shows up
+            // without waiting on Projects being configured at all.
+            this.postsSyncedOnce = false;
+            rescans.push(this.ensurePostsScanned());
             await Promise.all(rescans);
             setTimeout(() => menuBtn.removeClass("rotating"), 500);
           });
@@ -2648,14 +2656,13 @@ export class TodoSidebarView extends ItemView {
   }
 
   /**
-   * Lazy-loads the Posts tab's data: find the Hugo site among the repos
-   * Projects already scans, read its config, list its posts. Depends on
-   * `scannedProjects` (locateHugoSite filters that list for a "Hugo" stack
-   * tag), so it awaits ensureProjectsSynced first — see that method's own
-   * comment for why a plain boolean guard isn't enough for a dependent
-   * caller, and why this method needs the identical promise-cache shape for
-   * its own concurrent callers (onOpen and switchTab('posts') can both fire
-   * this close together too).
+   * Lazy-loads the Posts tab's data: check the current vault's own root for
+   * a Hugo config file, read it, list its posts. Deliberately independent
+   * of ensureProjectsSynced/scannedProjects — see HugoScanner.ts's module
+   * comment for why the two must never share a scan again. Kept the same
+   * promise-cache shape as ensureProjectsSynced regardless, since Posts
+   * still has its own concurrent-caller problem to solve (onOpen and
+   * switchTab('posts') can fire this close together).
    */
   private async ensurePostsScanned(): Promise<void> {
     if (this.postsSyncedOnce) return;
@@ -2665,12 +2672,11 @@ export class TodoSidebarView extends ItemView {
     }
 
     this.postsSyncing = true;
-    this.postsSyncPromise = this.ensureProjectsSynced()
-      .then(async () => {
-        const hugoRepo = locateHugoSite(this.scannedProjects);
-        this.cachedHugoSite = hugoRepo ? await readHugoSite(hugoRepo.localPath) : null;
-        this.cachedPosts = this.cachedHugoSite ? await scanPosts(this.cachedHugoSite) : [];
-      })
+    this.postsSyncPromise = (async () => {
+      const basePath = this.vaultBasePath();
+      this.cachedHugoSite = basePath ? await readHugoSite(basePath) : null;
+      this.cachedPosts = this.cachedHugoSite ? await scanPosts(this.cachedHugoSite) : [];
+    })()
       .catch((error) => {
         console.error("[Warped Todo]", "Hugo posts scan failed:", error);
         showNotice("Couldn't scan Hugo posts. See console for details.");
@@ -2839,29 +2845,19 @@ export class TodoSidebarView extends ItemView {
   // the full v1 scope (no draft-toggle mutation, no live file watcher).
 
   private renderPostsTabContent(container: HTMLElement): void {
-    const options = this.getProjectsOptions();
-
-    if (!options.baseFolder) {
-      const empty = container.createDiv({ cls: "warped-todo-posts-empty" });
-      empty.createEl("p", { text: "No base folder configured yet." });
-      const btn = empty.createEl("button", { text: "Open settings" });
-      btn.addEventListener("click", () => this.onOpenSettings());
-      return;
-    }
-
     // As with renderProjectsList: the first switch to this tab kicks off
     // ensurePostsScanned() in the background and renders immediately, so
     // an empty cache here can just mean "hasn't finished yet."
     if (this.postsSyncing && !this.postsSyncedOnce) {
-      container.createEl("p", { text: "Scanning posts…", cls: "warped-todo-posts-empty-msg" });
+      container.createEl("p", { text: "Scanning for a Hugo site…", cls: "warped-todo-posts-empty-msg" });
       return;
     }
 
     if (!this.cachedHugoSite) {
       const empty = container.createDiv({ cls: "warped-todo-posts-empty" });
-      empty.createEl("p", { text: "No Hugo site found under the configured base folder." });
+      empty.createEl("p", { text: "No Hugo site found in this vault." });
       empty.createEl("p", {
-        text: "Posts auto-detects a repo with a hugo.toml/config.yaml, at its root or under config/_default/.",
+        text: "Posts assumes the Hugo site is the vault itself — it looks for a hugo.toml/config.yaml (at the vault root, or under config/_default/) and nowhere else.",
         cls: "warped-todo-posts-empty-msg",
       });
       return;
@@ -2940,22 +2936,80 @@ export class TodoSidebarView extends ItemView {
       tags.createSpan({ text: "draft", cls: "warped-todo-posts-tag warped-todo-posts-tag-draft" });
     }
 
+    // Just the updated chunk now — the filename moved to its own line at
+    // the bottom, matching .warped-todo-project-row-file's placement below.
     const updated = (moment as any)(post.mtimeMs);
-    const displayPath = this.cachedHugoSite ? relative(this.cachedHugoSite.contentDir, post.path) : post.path;
     const metaLine = row.createDiv({ cls: "warped-todo-posts-row-meta" });
     metaLine.createSpan({
       text: formatRelativeShort(post.mtimeMs),
       cls: "warped-todo-posts-row-updated",
       attr: { title: updated.format("D MMM YYYY, h:mm A") },
     });
-    metaLine.createSpan({ text: " · " });
-    metaLine.createSpan({ text: displayPath, cls: "warped-todo-posts-row-path", attr: { title: post.path } });
 
+    // Excerpt — same treatment renderProjectReadmeSummary gives a project's
+    // README opening paragraph (rendered as markdown, not plain text: a
+    // frontmatter description is usually plain, but a body-excerpt fallback
+    // can carry inline markdown). See HugoParser.parsePostFrontmatter for
+    // where this comes from (frontmatter description/summary, else the
+    // post's own opening paragraph).
+    if (post.summary) {
+      const summaryEl = row.createDiv({ cls: "warped-todo-posts-row-summary" });
+      void this.renderPostSummary(summaryEl, post);
+    }
+
+    // Filename + arrow, its own line at the bottom — same placement as
+    // Projects' note-file line. Shown relative to the post's own section
+    // folder (not the full contentDir-relative path, which repeats the
+    // section the group header above already established) so a leaf-bundle
+    // post ("bundled-post/index.md") still reads as distinct from another
+    // leaf bundle's "index.md" in the same section, the one case a bare
+    // filename (Projects' equivalent line just shows noteFile.name) would
+    // be ambiguous here but never is for a single project note.
+    if (this.cachedHugoSite) {
+      const sectionDir =
+        post.section === "(root)" ? this.cachedHugoSite.contentDir : join(this.cachedHugoSite.contentDir, post.section);
+      const fileRow = row.createDiv({ cls: "warped-todo-posts-row-file" });
+      fileRow.createSpan({
+        cls: "header-filename",
+        text: relative(sectionDir, post.path),
+        attr: { title: post.path },
+      });
+      const link = fileRow.createEl("a", {
+        cls: "todo-orphan-section-link",
+        text: "→",
+        href: "#",
+        attr: { "aria-label": `Open ${post.path}` },
+      });
+      link.addEventListener("click", (evt) => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        this.openHugoPost(post.path);
+      });
+    }
+
+    // Left click opens in Obsidian, same as clicking any other file in the
+    // sidebar; right click is for the alternatives (editor app, OS default,
+    // reveal) — same "click vs. right-click" split the Projects detail
+    // view's overflow menu already uses for its Terminal/Editor actions.
     row.addEventListener("click", () => this.openHugoPost(post.path));
     row.addEventListener("contextmenu", (evt) => {
       evt.preventDefault();
       const menu = new Menu();
-      menu.addItem((item) => item.setTitle("Open").setIcon("file-text").onClick(() => this.openHugoPost(post.path)));
+      if (this.resolveVaultFile(post.path)) {
+        menu.addItem((item) =>
+          item.setTitle("Open in Obsidian").setIcon("file-text").onClick(() => this.openHugoPost(post.path))
+        );
+      }
+      menu.addItem((item) =>
+        item.setTitle("Open in Editor").setIcon("code").onClick(() => {
+          this.openProjectInApp(post.path, this.getPostsOptions().editorApp, "editor");
+        })
+      );
+      menu.addItem((item) =>
+        item.setTitle("Open in default app").setIcon("external-link").onClick(() => {
+          this.openExternalProjectFile(post.path);
+        })
+      );
       menu.addItem((item) =>
         item.setTitle("Reveal in Finder").setIcon("folder-open").onClick(() => this.revealProjectInFinder(post.path))
       );
@@ -2963,8 +3017,63 @@ export class TodoSidebarView extends ItemView {
     });
   }
 
+  /** Mirrors renderProjectReadmeSummary — same MarkdownRenderer treatment for a post's excerpt. */
+  private async renderPostSummary(container: HTMLElement, post: HugoPost): Promise<void> {
+    if (!post.summary) return;
+    const component = new Component();
+    component.load();
+    await MarkdownRenderer.render(this.app, post.summary, container, post.path, component);
+  }
+
+  /**
+   * A Hugo post's file lives on disk via Node `fs` (see HugoScanner.ts), not
+   * necessarily inside the vault — Projects/Posts base-folder scanning is
+   * deliberately vault-independent. When it *does* happen to fall under the
+   * vault's own root (the common case for this feature: the Hugo site
+   * itself opened as the vault), resolve it to a real TFile so it can open
+   * in Obsidian's own editor like any other note. Same basePath-relativize
+   * approach main.ts's chooseVaultPath uses for its file picker.
+   */
+  /**
+   * The current vault's own absolute base path (desktop only — this plugin
+   * is `isDesktopOnly: true`, so a non-`FileSystemAdapter` vault shouldn't
+   * occur, but null is the safe fallback if it ever does). Also *the* scope
+   * boundary for Posts: `ensurePostsScanned` calls `readHugoSite` with
+   * exactly this path and nothing else, per HugoScanner.ts's module comment.
+   */
+  private vaultBasePath(): string | null {
+    const adapter = this.app.vault.adapter;
+    return adapter instanceof FileSystemAdapter ? adapter.getBasePath() : null;
+  }
+
+  private resolveVaultFile(absPath: string): TFile | null {
+    const basePath = this.vaultBasePath();
+    if (!basePath) return null;
+    if (absPath !== basePath && !absPath.startsWith(basePath + sep)) return null;
+    const relPath = absPath === basePath ? "" : absPath.slice(basePath.length + 1).split(sep).join("/");
+    const file = this.app.vault.getAbstractFileByPath(relPath);
+    return file instanceof TFile ? file : null;
+  }
+
+  /**
+   * Left-click target for a Posts row. Opens in Obsidian's own editor when
+   * the post resolves to a vault file; otherwise there's no Obsidian editor
+   * to open it in, so this falls back to the configured external editor
+   * app, same as the row used to always do before "open in Obsidian"
+   * existed — a notice explains why, so it doesn't look like nothing
+   * happened.
+   */
   private openHugoPost(path: string): void {
-    this.openProjectInApp(path, this.getProjectsOptions().editorApp, "editor");
+    const vaultFile = this.resolveVaultFile(path);
+    if (vaultFile) {
+      void this.app.workspace.getLeaf(false).openFile(vaultFile);
+      return;
+    }
+    // Shouldn't happen in practice — Posts only ever scans within the
+    // vault's own root (see ensurePostsScanned), so a post it found should
+    // always resolve here. Kept as a defensive fallback, not a real path.
+    showNotice("Not part of this vault — opening in your configured editor app instead.");
+    this.openProjectInApp(path, this.getPostsOptions().editorApp, "editor");
   }
 
   private openNewHugoPostModal(): void {

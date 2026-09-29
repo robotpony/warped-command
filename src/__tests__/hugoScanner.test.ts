@@ -2,38 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, mkdir, writeFile, rm } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
-import { locateHugoSite, readHugoSite, scanPosts, createPost } from "../HugoScanner";
-import { ScannedProject } from "../ProjectScanner";
-
-function scannedProject(overrides: Partial<ScannedProject> & { localPath: string; stack: string[] }): ScannedProject {
-  return {
-    name: "site",
-    branch: "main",
-    gitStatus: "",
-    remote: "",
-    title: "site",
-    readmeSummary: null,
-    planSummary: null,
-    lastUpdated: null,
-    ...overrides,
-  };
-}
-
-describe("locateHugoSite", () => {
-  it("returns null when no scanned project has a Hugo stack tag", () => {
-    const projects = [scannedProject({ localPath: "/a", stack: ["JS"] })];
-    expect(locateHugoSite(projects)).toBeNull();
-  });
-
-  it("returns the first repo whose stack includes Hugo", () => {
-    const projects = [
-      scannedProject({ localPath: "/a", stack: ["JS"] }),
-      scannedProject({ localPath: "/b", stack: ["Hugo"] }),
-      scannedProject({ localPath: "/c", stack: ["Hugo"] }),
-    ];
-    expect(locateHugoSite(projects)?.localPath).toBe("/b");
-  });
-});
+import { readHugoSite, scanPosts, createPost } from "../HugoScanner";
 
 describe("readHugoSite / scanPosts / createPost", () => {
   let repo: string;
@@ -85,7 +54,7 @@ describe("readHugoSite / scanPosts / createPost", () => {
 
     await writeFile(
       join(content, "posts", "draft-post.md"),
-      "---\ntitle: \"Draft Post\"\ndraft: true\n---\n"
+      "---\ntitle: \"Draft Post\"\ndraft: true\ndescription: \"A one-line summary.\"\n---\n"
     );
     await writeFile(
       join(content, "posts", "_index.md"),
@@ -104,6 +73,7 @@ describe("readHugoSite / scanPosts / createPost", () => {
     const draft = posts.find((p) => p.title === "Draft Post")!;
     expect(draft.section).toBe("posts");
     expect(draft.draft).toBe(true);
+    expect(draft.summary).toBe("A one-line summary.");
     const bundled = posts.find((p) => p.title === "Bundled Post")!;
     expect(bundled.section).toBe("posts");
     const about = posts.find((p) => p.title === "About")!;

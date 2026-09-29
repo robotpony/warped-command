@@ -828,72 +828,94 @@ site's content, plus create a new post from the site's own archetype. No
 draft/publish toggle — flipping `draft` in frontmatter and running `hugo`
 stays a terminal job.
 
+### Scope: vault-only, deliberately not Projects
+
+**Posts assumes the Hugo site, if there is one, *is* the current vault —
+one specific, known folder — and never looks anywhere else.** This is a
+hard rule, not an implementation detail: `HugoScanner.ts` imports nothing
+from `ProjectScanner.ts`/`ProjectMetadata.ts`, on purpose, and
+`SidebarView.ensurePostsScanned` never touches `scannedProjects` or
+`ensureProjectsSynced`.
+
+The rule exists because of a real incident, not a hypothetical. An earlier
+version of this feature found "the" Hugo site by filtering the Projects
+extension's repo scan (`ProjectScanner.scan()`'s result) for a `"Hugo"`
+stack tag, reusing detection Projects already had. That seemed reasonable —
+until this plugin's own dev repo (`warped-command`) was temporarily seeded
+with its own `hugo.toml` as a manual-testing fixture. The *real* Hugo site
+being developed against (`w42`, opened as its own vault) had
+`projectsBaseFolder` set to a broad folder covering many repos, including
+`warped-command` — Projects' base-folder scan is deliberately broad, by
+design, since tracking work across many external repos is the entire point
+of the Projects extension. `locateHugoSite` just took the first
+`"Hugo"`-tagged repo the scan produced, no picker, and `warped-command`
+happened to sort earlier — so a throwaway test fixture in an unrelated repo
+silently shadowed the real site in active, daily use, with no error: the
+Posts tab just quietly showed the wrong site's four fixture posts instead
+of the real site's ninety-plus.
+
+The fix isn't "sort more carefully" or "pick the right one" — it's that
+Projects' scope (arbitrary, multiple, external repos) and Posts' scope (one
+specific vault) are fundamentally different, and sharing one detection
+pass between them means either scope can leak into the other. So: Projects
+keeps its broad scan, entirely unrelated to Posts now. Posts checks exactly
+one folder — the vault's own root — and nothing else, ever. If that folder
+doesn't have a Hugo config, there is no Hugo site as far as Posts is
+concerned, full stop; it does not fall back to searching anywhere.
+
 ### Detection
 
-Reuses the Projects Extension's own repo scan rather than a parallel
-config/watch system: `ProjectMetadata.ts`'s `TECH_FILES` table already tags
-any repo with a `hugo.toml`/`hugo.yaml`/`hugo.yml`/`config.toml`/
-`config.yaml`/`config.yml` at its root as `"Hugo"` in `ScannedProject.stack`
-(this predates the Posts tab — it was already used for the Projects list's
-Stack display). `HugoScanner.locateHugoSite` filters `scannedProjects` for
-the first repo whose stack includes `"Hugo"` and takes it as *the* site —
-one Hugo site per vault is assumed; a monorepo with more than one Hugo
-config only ever sees the first.
+`SidebarView.vaultBasePath()` resolves the current vault's own absolute
+path (`FileSystemAdapter.getBasePath()` — same approach `main.ts`'s
+`chooseVaultPath` file picker already used elsewhere in this codebase).
+`ensurePostsScanned` calls `HugoScanner.readHugoSite` with exactly that
+path — nothing scanned, nothing filtered, no repo list involved at all.
 
-`HugoScanner.readHugoSite` then finds the actual config file (same
-candidate-list-in-priority-order pattern `ProjectMetadata.ts`'s
-`findReadme`/`findChangelog` use — `hugo.*` before `config.*`, matching
-modern Hugo's own preference) and reads its `contentDir` via
-`HugoParser.parseHugoConfig`, defaulting to `"content"` when unset.
+`readHugoSite` finds the actual config file (a candidate-list-in-priority-
+order pattern, same shape as `ProjectMetadata.ts`'s `findReadme`/
+`findChangelog` — `hugo.*` before `config.*`, matching modern Hugo's own
+preference, and also falling back to the newer `config/_default/` layout
+one directory level down, same filenames) and reads its `contentDir` via
+`HugoParser.parseHugoConfig`, defaulting to `"content"` when unset. No
+settings field drives any of this — there's nothing to configure, by
+design; the vault root either has a Hugo config or it doesn't.
 
-Both the stack tag (`ProjectMetadata.hasHugoConfigDir`) and the config read
-(`HugoScanner.findConfigFile`) also fall back to Hugo's newer
-`config/_default/` layout — same filenames, one directory level down —
-checked only when no root-level file exists. Found via a real repo that
-uses only this layout (`bruce-loves-to-cook.warpedvisions.org`); a root-only
-check silently missed it, with no error — the Posts tab just reported no
-Hugo site found.
+Note that `ProjectMetadata.ts`'s own `TECH_FILES`/`hasHugoConfigDir` still
+tag a scanned repo `"Hugo"` for the Projects list's own Stack display —
+that's fine, and unrelated. The rule above is specifically that *Posts*
+must never read that tag or anything else Projects produces.
 
-### A lazy-sync race, and why the fix is a shared promise, not a boolean
+### Settings: Posts has its own, not Projects'
 
-`ensurePostsScanned` depends on `ensureProjectsSynced`'s *result*
-(`scannedProjects`), not just "has a sync happened." Both are fired
-fire-and-forget from `onOpen` in the same tick. The original guard —
-`if (this.projectsSyncedOnce || this.projectsSyncing) return;` — only
-prevented a second, redundant sync from *starting*; it didn't make a
-concurrent caller *wait* for the one already in flight. So `ensurePostsScanned`
-could call `ensureProjectsSynced()` while the first call was still awaiting
-`syncManager.syncAll(...)`, see `projectsSyncing === true`, and return
-immediately with `scannedProjects` still at its stale (often empty, on
-first load) value — `locateHugoSite` then finds nothing, and
-`postsSyncedOnce` latches `true`, so the Posts tab reports "No Hugo site
-found" permanently until the next manual Refresh, even though the repo is
-right there. This didn't reproduce in the synthetic temp-dir unit tests
-(which call `HugoScanner` directly, bypassing `SidebarView`'s async
-orchestration entirely) — found only by testing against a real vault, where
-the timing-dependent race actually fires. Both `ensureProjectsSynced` and
-`ensurePostsScanned` now cache their in-flight promise
-(`projectsSyncPromise`/`postsSyncPromise`); a concurrent caller awaits that
-shared promise instead of the boolean, so it gets the real result once the
-sync completes rather than racing past it.
+`postsEditorApp` (Settings → Posts → "Editor app") is a separate setting
+from `projectsEditorApp`, read via its own `PostsSidebarOptions`/
+`getPostsOptions()` closure (`main.ts`'s `postsOptions()`), not
+`ProjectsSidebarOptions`/`getProjectsOptions()`. The two will often hold
+the same app name in practice, but Posts must not read Projects' copy of
+it — same reasoning as the scope rule above, applied to configuration, not
+just detection.
 
 ### Data flow
 
 ```
-1. Locate  : locateHugoSite(scannedProjects) — reuses the Projects scan,
-             does not trigger a scan of its own
-2. Read    : readHugoSite(repoPath) finds + parses the site's config
-             for contentDir
+1. Locate  : vaultBasePath() reads the current vault's own absolute path
+             (FileSystemAdapter) — no scan, no repo list, just one path
+2. Read    : readHugoSite(vaultBasePath) finds + parses that vault's own
+             config for contentDir; null if it has none
 3. Scan    : scanPosts(site) walks contentDir, parses each .md's
-             frontmatter (title/draft/date) + mtime
+             frontmatter (title/draft/date/summary) + mtime
 4. Render  : SidebarView.renderPostsTabContent — Drafts/All filter,
              grouped by top-level section folder, sorted by mtime
              within each group
-5. Open    : row click -> openProjectInApp (reuses the Projects detail
-             view's "Open in Editor" mechanism, same projectsEditorApp
-             setting) — Hugo content lives outside the vault, same as a
-             repo's BUGS.md/TODO.md, so this is the same external-file-
-             open path, not the vault API
+5. Open    : row click -> resolveVaultFile relativizes the post's absolute
+             path against vaultBasePath() and looks it up via the vault
+             API — for Posts this should always resolve, since step 1-3
+             never leave the vault to begin with. Opens via the normal
+             vault API, same as any other note. The "doesn't resolve"
+             branch (falls back to openProjectInApp, postsEditorApp) is a
+             defensive fallback for an edge case, not a real path. Right-
+             click always offers the external alternatives (Editor app, OS
+             default, reveal) regardless of which the row click used.
 6. Create  : "New post" (kebab menu) -> createPost writes
              content/<section>/<slug>.md from the repo's own archetype
 ```
@@ -914,13 +936,37 @@ interface HugoSite {
 }
 
 interface HugoPost {
-  title: string;    // frontmatter title, or filename when absent
-  path: string;     // absolute path to the post's .md file
-  section: string;  // first path segment under contentDir; "(root)" if none
-  draft: boolean;   // frontmatter `draft`; defaults false when absent
-  mtimeMs: number;  // file mtime — drives the "~Xd" label and within-group sort
+  title: string;      // frontmatter title, or filename when absent
+  path: string;       // absolute path to the post's .md file
+  section: string;    // first path segment under contentDir; "(root)" if none
+  draft: boolean;     // frontmatter `draft`; defaults false when absent
+  mtimeMs: number;    // file mtime — drives the "~Xd" label and within-group sort
+  summary?: string;   // frontmatter description/summary, else the body's opening paragraph
 }
 ```
+
+### Row format matches the Projects list, plus tags
+
+The Posts tab's row renderer (`renderPostRow`) deliberately mirrors
+`renderProjectSummary`'s "list" variant rather than inventing its own
+layout: bold name on the title line, a dot-joined meta line below it, an
+optional excerpt (same `MarkdownRenderer.render` treatment
+`renderProjectReadmeSummary` gives a README's opening paragraph), and the
+filename on its own line at the bottom with a → to open it — same
+placement as `.warped-todo-project-row-file`. The one addition Posts needs
+that Projects doesn't is per-row tags (`draft` now, room for real Hugo
+taxonomy tags later); those sit on the title line as small pills, reusing
+this sidebar's existing tag-pill visual language rather than folding into
+the dot-joined meta text.
+
+The bottom-line filename shows the path relative to the post's own
+*section* folder, not the full `contentDir`-relative path — the group
+header above already establishes the section, and showing it twice was
+redundant. This also disambiguates leaf-bundle posts, where the filename
+alone is always `index.md`: Projects' equivalent line can just show
+`noteFile.name` because there's exactly one file per project, but two
+different leaf-bundle posts in the same section would otherwise both read
+as "index.md."
 
 ### Archetype rendering (v1 scope)
 

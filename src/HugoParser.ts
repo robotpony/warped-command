@@ -24,13 +24,52 @@ export interface ParsedPostFrontmatter {
   title?: string;
   draft: boolean;
   date?: string;
+  /** Frontmatter `description`/`summary`, falling back to the body's opening paragraph. */
+  summary?: string;
 }
 
 const DEFAULT_CONTENT_DIR = "content";
 
+// Matches ProjectMetadata.ts's own SUMMARY_MAX_CHARS — same "roughly 2-3
+// sidebar lines" budget, same reasoning (a hard line count doesn't work
+// since prose wraps unpredictably at sidebar width).
+const SUMMARY_MAX_CHARS = 220;
+
 function unquoteScalar(value: string): string {
   const match = value.match(/^"(.*)"$/) ?? value.match(/^'(.*)'$/);
   return match ? match[1] : value;
+}
+
+function truncateSummary(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max);
+  const lastSpace = cut.lastIndexOf(" ");
+  return `${cut.slice(0, lastSpace > 0 ? lastSpace : max)}…`;
+}
+
+/**
+ * Fallback for a post with no frontmatter `description`/`summary`: its
+ * body's opening paragraph (Hugo posts don't put a `# Title` heading at the
+ * top of the body the way a README does — the title lives in frontmatter —
+ * so this starts collecting from the first non-blank line, unlike
+ * ProjectMetadata.extractProjectSummary, which starts after one). Stops at
+ * the first blank line or heading; markdown syntax is left as-is since the
+ * result is rendered through MarkdownRenderer, not shown as plain text.
+ */
+function extractBodyExcerpt(body: string): string | null {
+  const excerptLines: string[] = [];
+  for (const line of body.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      if (excerptLines.length > 0) break;
+      continue;
+    }
+    if (/^#{1,6}\s/.test(trimmed)) break;
+    excerptLines.push(trimmed);
+  }
+  if (excerptLines.length === 0) return null;
+  const text = excerptLines.join(" ").replace(/\s+/g, " ").trim();
+  return text ? truncateSummary(text, SUMMARY_MAX_CHARS) : null;
 }
 
 /**
@@ -59,7 +98,12 @@ export function parsePostFrontmatter(content: string): ParsedPostFrontmatter {
   const yamlMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
   const tomlMatch = !yamlMatch ? content.match(/^\+\+\+\r?\n([\s\S]*?)\r?\n\+\+\+\r?\n?/) : null;
   const block = yamlMatch?.[1] ?? tomlMatch?.[1];
-  if (block === undefined) return { draft: false };
+  const delimiterMatch = yamlMatch ?? tomlMatch;
+  const body = content.slice(delimiterMatch?.[0]?.length ?? 0);
+
+  if (block === undefined) {
+    return { draft: false, summary: extractBodyExcerpt(body) ?? undefined };
+  }
 
   const separator = tomlMatch ? "=" : ":";
   const entries = new Map<string, string>();
@@ -71,10 +115,13 @@ export function parsePostFrontmatter(content: string): ParsedPostFrontmatter {
     entries.set(key, unquoteScalar(line.slice(idx + 1).trim()));
   }
 
+  const frontmatterSummary = entries.get("description") || entries.get("summary");
+
   return {
     title: entries.get("title") || undefined,
     draft: entries.get("draft")?.toLowerCase() === "true",
     date: entries.get("date") || entries.get("lastmod") || undefined,
+    summary: frontmatterSummary || extractBodyExcerpt(body) || undefined,
   };
 }
 

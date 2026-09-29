@@ -2,6 +2,48 @@
 
 All notable changes to the ␣⌘ Warped Command plugin will be documented in this file.
 
+## [0.52.0] - 2026-09-29
+
+### Added — Posts is now vault-scoped, with its own settings
+
+- Posts no longer detects "the" Hugo site by reusing the Projects
+  extension's repo scan. It now checks only the current vault's own root
+  for a `hugo.toml`/`config.yaml`/etc. (or `config/_default/`) — nothing
+  else, ever.
+- Fixes a real incident this surfaced: since Projects' base-folder scan is
+  deliberately broad (it tracks arbitrary repos on disk, by design),
+  another repo under that scan with its own Hugo config — even this
+  plugin's own dev repo, briefly seeded with a test fixture — could sort
+  earlier and silently shadow the *real* site in active, daily use, with
+  no error shown.
+- New setting: Settings → Posts → "Editor app," independent of the
+  Projects section's "Editor app." Posts no longer reads
+  `projectsEditorApp` or anything else from Projects' settings.
+- See DESIGN.md's Hugo Posts section, "Scope: vault-only, deliberately not
+  Projects," for the full rationale.
+
+## [0.51.0] - 2026-09-29
+
+### Changed — Posts row rework, opens in Obsidian
+
+- The meta line (relative edit age · path) used a different font-size
+  unit, was missing the top gap below the title line, and didn't fade the
+  "updated" chunk the way Projects' equivalent line does — all
+  unintentional drift from `.warped-todo-project-row-meta`/
+  `-row-updated`, now matched exactly.
+- The filename moved to its own line at the bottom of the row (with a →
+  arrow to open), matching where Projects puts its note-file line, instead
+  of sitting in the meta line.
+- Posts rows now show a short excerpt below the meta line too, the same
+  way Projects shows a repo's README opening paragraph — from the post's
+  frontmatter `description`/`summary`, falling back to its own opening
+  paragraph when neither is set.
+- Clicking a post now opens it in Obsidian's own editor (when the post
+  resolves to a vault file — the common case, since the Hugo site itself
+  is usually the vault) instead of always shelling out to the configured
+  editor app. Right-click still covers the alternatives: Open in Editor,
+  Open in default app, Reveal in Finder.
+
 ## [0.50.0] - 2026-09-29
 
 ### Added — Posts tab (Hugo)

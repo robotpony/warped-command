@@ -198,6 +198,15 @@ export interface WarpedTodoSettings {
   projectsEditorApp: string;
   /** Sort the Projects list opens with each session (see PROJECT_SORT_OPTIONS). The list itself stays session-only after that — picking a different sort from its own menu doesn't change this setting. */
   defaultProjectsSortKey: ProjectSortKey;
+  /**
+   * App name passed to macOS `open -a` for the Posts tab's "Open in Editor"
+   * action. Deliberately its own setting, not `projectsEditorApp` — Posts
+   * doesn't read anything from the Projects extension (see HugoScanner.ts's
+   * module comment on why the two must stay independent), so it doesn't
+   * borrow that setting either, even though the two will often hold the
+   * same app name in practice.
+   */
+  postsEditorApp: string;
   /** "major.minor" of the plugin version the help note was last revealed at ("" = never). Drives HelpNoteManager: reopens (never overwrites) the help note when this falls behind the running version's major.minor. */
   helpNoteLastSeenVersion: string;
   /**
@@ -221,15 +230,24 @@ export interface ProjectSyncStateEntry {
 }
 
 /**
- * The Hugo site auto-detected among the repos under `projectsBaseFolder`
- * (the first `ScannedProject` whose `stack` includes `"Hugo"` — see
- * `HugoScanner.locateHugoSite`). Assumes one Hugo site per vault.
+ * The Hugo site detected at the current vault's own root (see
+ * `HugoScanner.readHugoSite`, called with the vault's base path — not
+ * anything from the Projects extension's scan). Posts assumes the Hugo
+ * site, if there is one, *is* the vault; it never looks anywhere else.
+ * See DESIGN.md's Hugo Posts section, "Scope: vault-only, deliberately
+ * not Projects" for why.
  */
 export interface HugoSite {
-  /** Absolute path to the repo root. */
+  /** Absolute path to the repo root — the vault's own base path. */
   repoPath: string;
   /** Absolute path to the site's content directory — repoPath + its own `contentDir` config (default `"content"`). See HugoParser.parseHugoConfig. */
   contentDir: string;
+}
+
+/** Settings the Posts tab reads — its own, independent of `ProjectsSidebarOptions`. */
+export interface PostsSidebarOptions {
+  /** App name passed to macOS `open -a` for "Open in Editor" (right-click on a post row). */
+  editorApp: string;
 }
 
 /** One post found under a HugoSite's contentDir. See `HugoScanner.scanPosts`. */
@@ -243,6 +261,8 @@ export interface HugoPost {
   draft: boolean;
   /** File mtime in ms, used for the compact "~Xd" relative label and within-section sort. */
   mtimeMs: number;
+  /** Frontmatter `description`/`summary`, falling back to the body's opening paragraph. See HugoParser.parsePostFrontmatter. */
+  summary?: string;
 }
 
 export const DEFAULT_SETTINGS: WarpedTodoSettings = {
@@ -277,4 +297,6 @@ export const DEFAULT_SETTINGS: WarpedTodoSettings = {
   defaultProjectsSortKey: "recentlyUpdated",
   helpNoteLastSeenVersion: "",
   projectSyncState: {},
+  // Posts (Hugo) — deliberately separate from the Projects extension above.
+  postsEditorApp: "Visual Studio Code",
 };
