@@ -1918,7 +1918,6 @@
   align-items: center;
   gap: var(--size-4-2);
   padding: var(--size-4-2) 0 var(--size-4-1);
-  font-size: var(--font-ui-small);
 }
 
 .warped-todo-posts-group-header:not(:first-child) {
@@ -1926,9 +1925,13 @@
   margin-top: var(--size-4-1);
 }
 
+/* Same size as .todo-section-title (the TODOs tab's folder/section heading)
+   so Posts' "blog 70" heading reads at the same weight as a TODOs section
+   heading rather than shrinking to --font-ui-small. */
 .warped-todo-posts-group-name {
   font-weight: 600;
   color: var(--text-normal);
+  font-size: 14px;
 }
 
 .warped-todo-posts-group-count {
@@ -1937,10 +1940,11 @@
 }
 
 /* Mirrors .warped-todo-project-row's list-row treatment (padding, bottom
-   divider) below — same row rhythm across the Projects and Posts tabs. */
+   divider) below — same row rhythm across the Projects and Posts tabs.
+   Flush left, same as .todo-item in the TODOs tab — no extra indent under
+   the group heading. */
 .warped-todo-posts-row {
   padding: var(--size-4-2);
-  padding-left: calc(14px + var(--size-4-2));
   border-bottom: 1px solid var(--background-modifier-border);
   cursor: pointer;
 }
