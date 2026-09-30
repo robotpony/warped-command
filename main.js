@@ -5021,6 +5021,7 @@ var TodoSidebarView = class extends import_obsidian14.ItemView {
     // detail mode by the next such event.
     this.lastKnownProjectFilePath = null;
     this.postsFilter = "drafts";
+    this.postsFilterText = "";
     this.cachedHugoSite = null;
     this.cachedPosts = [];
     this.postsSyncing = false;
@@ -7091,7 +7092,18 @@ var TodoSidebarView = class extends import_obsidian14.ItemView {
     const pills = filterRow.createDiv({ cls: "warped-todo-posts-filter-pills" });
     this.renderPostsFilterPill(pills, "drafts", `Drafts ${draftCount}`);
     this.renderPostsFilterPill(pills, "all", `All ${this.cachedPosts.length}`);
+    const textFilterRow = container.createDiv({ cls: "warped-todo-posts-text-filter-row" });
+    const filterInput = textFilterRow.createEl("input", {
+      type: "text",
+      placeholder: "Filter\u2026",
+      cls: "warped-todo-posts-text-filter"
+    });
+    filterInput.value = this.postsFilterText;
     const listEl = container.createDiv({ cls: "warped-todo-posts-list" });
+    filterInput.addEventListener("input", () => {
+      this.postsFilterText = filterInput.value;
+      this.renderPostRows(listEl);
+    });
     this.renderPostRows(listEl);
   }
   renderPostsFilterPill(container, filter, label) {
@@ -7106,10 +7118,17 @@ var TodoSidebarView = class extends import_obsidian14.ItemView {
   }
   renderPostRows(listEl) {
     var _a;
-    const visible = this.postsFilter === "drafts" ? this.cachedPosts.filter((p) => p.draft) : this.cachedPosts;
+    listEl.empty();
+    let visible = this.postsFilter === "drafts" ? this.cachedPosts.filter((p) => p.draft) : this.cachedPosts;
+    const filterLower = this.postsFilterText.toLowerCase();
+    if (filterLower) {
+      visible = visible.filter(
+        (p) => p.title.toLowerCase().includes(filterLower) || p.section.toLowerCase().includes(filterLower)
+      );
+    }
     if (visible.length === 0) {
       listEl.createEl("p", {
-        text: this.postsFilter === "drafts" ? "No drafts." : "No posts found.",
+        text: filterLower ? "No posts matching that filter." : this.postsFilter === "drafts" ? "No drafts." : "No posts found.",
         cls: "warped-todo-posts-empty-msg"
       });
       return;

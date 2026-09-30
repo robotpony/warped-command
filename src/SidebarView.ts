@@ -150,6 +150,7 @@ export class TodoSidebarView extends ItemView {
   // from the Projects extension.
   private getPostsOptions: () => PostsSidebarOptions;
   private postsFilter: 'drafts' | 'all' = 'drafts';
+  private postsFilterText: string = '';
   private cachedHugoSite: HugoSite | null = null;
   private cachedPosts: HugoPost[] = [];
   private postsSyncing: boolean = false;
@@ -2869,7 +2870,24 @@ export class TodoSidebarView extends ItemView {
     this.renderPostsFilterPill(pills, 'drafts', `Drafts ${draftCount}`);
     this.renderPostsFilterPill(pills, 'all', `All ${this.cachedPosts.length}`);
 
+    // Text filter, mirroring renderProjectsList's filter input — matches
+    // against title and section, not just the currently-selected drafts/all
+    // pill, so the two filters combine rather than compete.
+    const textFilterRow = container.createDiv({ cls: "warped-todo-posts-text-filter-row" });
+    const filterInput = textFilterRow.createEl("input", {
+      type: "text",
+      placeholder: "Filter…",
+      cls: "warped-todo-posts-text-filter",
+    }) as HTMLInputElement;
+    filterInput.value = this.postsFilterText;
+
     const listEl = container.createDiv({ cls: "warped-todo-posts-list" });
+
+    filterInput.addEventListener("input", () => {
+      this.postsFilterText = filterInput.value;
+      this.renderPostRows(listEl);
+    });
+
     this.renderPostRows(listEl);
   }
 
@@ -2885,11 +2903,19 @@ export class TodoSidebarView extends ItemView {
   }
 
   private renderPostRows(listEl: HTMLElement): void {
-    const visible = this.postsFilter === 'drafts' ? this.cachedPosts.filter((p) => p.draft) : this.cachedPosts;
+    listEl.empty();
+    let visible = this.postsFilter === 'drafts' ? this.cachedPosts.filter((p) => p.draft) : this.cachedPosts;
+
+    const filterLower = this.postsFilterText.toLowerCase();
+    if (filterLower) {
+      visible = visible.filter(
+        (p) => p.title.toLowerCase().includes(filterLower) || p.section.toLowerCase().includes(filterLower)
+      );
+    }
 
     if (visible.length === 0) {
       listEl.createEl("p", {
-        text: this.postsFilter === 'drafts' ? "No drafts." : "No posts found.",
+        text: filterLower ? "No posts matching that filter." : this.postsFilter === 'drafts' ? "No drafts." : "No posts found.",
         cls: "warped-todo-posts-empty-msg",
       });
       return;

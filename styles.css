@@ -1902,6 +1902,17 @@
   gap: var(--size-4-1);
 }
 
+/* Text filter row — same width/margin trick as .warped-todo-projects-filter-row,
+   just without a sort button sharing the row (Posts sorts by mtime only). */
+.warped-todo-posts-text-filter-row {
+  width: calc(100% + 4px);
+  margin: 0 -4px var(--size-4-2) 0;
+}
+
+.warped-todo-posts-text-filter {
+  width: 100%;
+}
+
 /* .tag-cloud-pill (defined above) already supplies the base pill look —
    monospace, accent-tinted, rounded. .is-active just fills it solid so the
    Drafts/All toggle reads as a toggle, not two identically-weighted tags. */

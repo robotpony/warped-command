@@ -2,6 +2,14 @@
 
 All notable changes to the ␣⌘ Warped Command plugin will be documented in this file.
 
+## [0.53.0] - 2026-09-29
+
+### Added — Text filter for the Posts tab
+
+- Posts now has a filter input, mirroring the Projects list's filter box:
+  matches against post title and section, combining with the existing
+  Drafts/All pill rather than replacing it.
+
 ## [0.52.0] - 2026-09-29
 
 ### Added — Posts is now vault-scoped, with its own settings

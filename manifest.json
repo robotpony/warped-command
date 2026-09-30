@@ -1,7 +1,7 @@
 {
   "id": "warped-todo",
   "name": "Warped Command",
-  "version": "0.52.0",
+  "version": "0.53.0",
   "minAppVersion": "0.15.0",
   "description": "Tools for managing TODOs, TODONEs, and project tracking across your vault, with an interactive sidebar.",
   "author": "Bruce Alderson",
